@@ -1,24 +1,21 @@
 (function () {
   try {
-    if (!document.defaultView.location.href.includes("starve.io")) return;
     const view = document.defaultView;
+    if (!location.href.includes("starve.io")) return;
     function inject() {
-      [
-        ["loader/polyfill.js", "module"],
-        ["loader/packages.js", "classic"],
-        ["loader/loader.js", "module"]
-      ].forEach(function (item) {
-        const s = document.createElement("script");
-        s.src = view.chrome.runtime.getURL(item[0]);
-        if (item[1] === "module") s.type = "module";
-        s.async = false;
-        (document.head || document.documentElement).appendChild(s);
-      });
+      [["loader/polyfill.js", false], ["loader/packages.js", false], ["loader/loader.js", false]]
+        .forEach(([src, asModule]) => {
+          const s = document.createElement("script");
+          s.src = view.chrome.runtime.getURL(src);
+          if (asModule) s.type = "module";
+          s.async = false;                       // zachowuje kolejność
+          (document.head || document.documentElement).appendChild(s);
+        });
     }
-    view.chrome.storage.local.get("active", function (storage) {
-      if (storage.active === 0) { console.log("%cVoid Disabled", "color: red;"); return; }
-      if (storage.active === undefined) view.chrome.storage.local.set({ active: 1 });
-      console.log("%cVoid Enabled", "color: lime;");
+    view.chrome.storage.local.get("active", (st) => {
+      if (st.active === 0) return console.log("%cVoid OFF", "color:red");
+      if (st.active === undefined) view.chrome.storage.local.set({ active: 1 });
+      console.log("%cVoid ON", "color:lime");
       inject();
     });
   } catch (e) { console.warn("Void injector:", e); }

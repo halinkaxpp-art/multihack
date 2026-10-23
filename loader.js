@@ -6,6 +6,8 @@
 
 /* ------------------------------------------------------------------ utils */
 const log   = (m, c) => console.log("%c[Void] " + m, "color:" + (c || "cyan") + ";font-weight:bold");
+   window.addEventListener('error', e => log('BLAD:', e.message, '@', e.filename + ':' + e.lineno));
+window.addEventListener('unhandledrejection', e => log('BLAD PROMISE:', (e.reason && (e.reason.stack || e.reason)) || e.reason));
 const warn  = (...a) => console.warn("[Void]", ...a);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const $     = (id) => document.getElementById(id);

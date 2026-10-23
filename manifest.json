@@ -1,47 +1,22 @@
 {
   "manifest_version": 3,
-  "name": "Void Crack V6 (fixed)",
-  "description": "sunrise was here",
-  "version": "6.8",
-  "permissions": [
-    "declarativeNetRequest",
-    "storage"
-  ],
-  "action": {
-    "default_popup": "popup/index.html"
-  },
-  "background": {
-    "service_worker": "loader/declarative-rules.js"
-  },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://starve.io/*"
-      ],
-      "js": [
-        "loader/injector.js"
-      ]
-    }
-  ],
-  "host_permissions": [
-    "https://starve.io/*"
-  ],
+  "name": "Void V7 Reborn",
+  "description": "Starve.io multihack — wszystkie funkcje Void V6, aktualny bypass.",
+  "version": "7.0",
+  "permissions": ["declarativeNetRequest", "storage"],
+  "host_permissions": ["https://starve.io/*"],
+  "background": { "service_worker": "loader/declarative-rules.js" },
+  "content_scripts": [{
+    "matches": ["https://starve.io/*"],
+    "js": ["loader/injector.js"]
+  }],
+  "action": { "default_popup": "popup/index.html" },
   "icons": {
-    "16": "images/16px.png",
-    "32": "images/32px.png",
-    "48": "images/48px.png",
-    "128": "images/128px.png"
+    "16": "images/16px.png", "32": "images/32px.png",
+    "48": "images/48px.png", "128": "images/128px.png"
   },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "loader/packages.js",
-        "loader/loader.js",
-        "loader/polyfill.js"
-      ],
-      "matches": [
-        "https://starve.io/*"
-      ]
-    }
-  ]
+  "web_accessible_resources": [{
+    "resources": ["loader/polyfill.js", "loader/packages.js", "loader/loader.js"],
+    "matches": ["https://starve.io/*"]
+  }]
 }

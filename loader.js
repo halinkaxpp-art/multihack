@@ -1,7 +1,5 @@
 /* =============================================================================
-   Void V7 Reborn — loader.js
-   Starve.io multihack. Silnik: auto-detekcja propsow (AST), hooki, GUI, funkcje.
-   Autor portu: Venice
+   Void V7 Reborn — loader.js (v7.1 FIXED)
    ============================================================================= */
 (async function () {
 "use strict";
@@ -11,14 +9,15 @@ const log   = (m, c) => console.log("%c[Void] " + m, "color:" + (c || "cyan") + 
 const warn  = (...a) => console.warn("[Void]", ...a);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const $     = (id) => document.getElementById(id);
+const randStr = (n) => Array.from({ length: n }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)]).join("");
 
 window.addEventListener("unhandledrejection", e => warn("promise:", e.reason));
 
 /* ---------------------------------------------------- 0. biblioteki (AST) */
 if (window.__voidLibs) { try { await window.__voidLibs; } catch (e) {} }
 for (let i = 0; i < 400 && (!window.acorn || !window.Terser || !window.js_beautify); i++) await sleep(25);
-if (!window.acorn || !window.Terser) { log("brak acorn/Terser — sprawdz net", "red"); }
-if (window.js_beautify === undefined) window.js_beautify = (s) => s; // awaryjnie
+if (!window.acorn || !window.Terser) log("brak acorn/Terser — sprawdz net", "red");
+if (typeof window.js_beautify !== "function") { log("brak js-beautify — detekcja moze byc niedokladna", "orange"); window.js_beautify = (s) => s.replace(/;/g, ";\n").replace(/\{/g, "{\n").replace(/\}/g, "\n}"); }
 
 /* ---------------------------------------------- 1. typy jednostek i itemy */
 const E = {
@@ -88,8 +87,6 @@ const ITEM = {};
  "FUR_MAMMOTH FUR_CROCODILE PARROT_FEATHER FUR_OCELOT PARROT VULTURE BANANA randomshit4 GOLDEN_HEN"
 ).split(" ").forEach((n, i) => ITEM[n] = i);
 
-const FLAG = { DELETE:1, HURT:2, COLD:4, HUNGER:8, ATTACK:16, WALK:32, IDLE:64, HEAL:128, WEB:256 };
-
 /* ------------------------------------------------ 2. znalezienie bundle gry */
 const gameTag = Array.from(document.querySelectorAll("script")).find(s => {
   const u = s.src || "";
@@ -111,16 +108,35 @@ const GAME_SRC = await new Promise((res, rej) => {
 });
 log("pobrano " + Math.round(GAME_SRC.length / 1024) + " KB");
 
-/* --------------------------------------------- 3. detekcja propsow z cache */
-const VERSION = (GAME_URL.match(/v=(\d+)/) || [])[1] || "0";
+/* --------------------------------------------- 3. IndexedDB (POPRAWIONE) */
 const idb = () => new Promise((res, rej) => {
-  const r = indexedDB.open("crackSunrise", 1);
-  r.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains("data")) db.createObjectStore("data"); };
-  r.onsuccess = () => res(r.target.result);
-  r.onerror = () => rej(r.error);
+  const req = indexedDB.open("crackSunrise", 1);
+  req.onupgradeneeded = (ev) => {
+    const db = ev.target ? ev.target.result : req.result;
+    if (!db.objectStoreNames.contains("data")) db.createObjectStore("data");
+  };
+  req.onsuccess = (ev) => res(ev.target ? ev.target.result : req.result);   // <-- FIX: event, nie request
+  req.onerror = () => rej(req.error);
 });
-const idbGet = async k => { const db = await idb(); return new Promise(res => { db.transaction("data","readonly").objectStore("data").get(k).onsuccess = e => res(e.target.result); }); };
-const idbPut = async (k, v) => { const db = await idb(); return new Promise(res => { db.transaction("data","readwrite").objectStore("data").put(v, k).onsuccess = res; }); };
+const idbGet = async (k) => {
+  const db = await idb();
+  return new Promise((res) => {
+    const r = db.transaction("data", "readonly").objectStore("data").get(k);
+    r.onsuccess = (ev) => res((ev.target || r).result);
+    r.onerror = () => res(undefined);
+  });
+};
+const idbPut = async (k, v) => {
+  const db = await idb();
+  return new Promise((res) => {
+    const r = db.transaction("data", "readwrite").objectStore("data").put(v, k);
+    r.onsuccess = () => res(true);
+    r.onerror = () => res(false);
+  });
+};
+
+/* --------------------------------------------- 4. detekcja propsow z cache */
+const VERSION = (GAME_URL.match(/v=(\d+)/) || [])[1] || "0";
 
 function detectProps(ast) {
   const out = ["", "", "", "", ""];
@@ -169,15 +185,22 @@ if (cached && cached.version === VERSION && Array.isArray(cached.props) && cache
   log("props z cache (v" + VERSION + ")");
 } else {
   try {
+    const t0 = performance.now();
     const min = await window.Terser.minify(GAME_SRC, { compress: { passes: 1 }, mangle: false });
+    log("Terser gotowy w " + Math.round(performance.now() - t0) + "ms");
     PROPS = detectProps(window.acorn.parse(min.code, { ecmaVersion: 2022 }));
+    if (PROPS.filter(Boolean).length < 4) {
+      log("malo propsow ze skompresowanego zrodla — probuje surowe", "orange");
+      const alt = detectProps(window.acorn.parse(GAME_SRC, { ecmaVersion: 2022 }));
+      PROPS = PROPS.map((p, i) => p || alt[i]);
+    }
     await idbPut("__ClientHandler__", { version: VERSION, props: PROPS });
     log("props wykryte: " + JSON.stringify(PROPS));
   } catch (e) { warn("detekcja:", e); PROPS = (cached && cached.props) || null; }
 }
-if (!PROPS) { log("nie udalo sie wykryc propsow gry", "red"); return; }
+if (!PROPS || !PROPS.filter(Boolean).length) { log("nie udalo sie wykryc propsow gry", "red"); return; }
 
-/* ------------------------------ 4. hook Object.prototype (przechwyt instancji) */
+/* ------------------------------ 5. hook Object.prototype (przechwyt instancji) */
 const captured = [];
 for (const p of PROPS) {
   if (!p) continue;
@@ -193,9 +216,8 @@ for (const p of PROPS) {
 const _keys = Object.keys;
 Object.keys = (o) => (o === null || o === undefined) ? [] : _keys(o);
 Object.keys.toString = () => "function keys() { [native code] }";
-Object.defineProperty = Object.defineProperty;
 
-/* ---------------------------------------------- 5. pomocnicze do mapowania */
+/* ---------------------------------------------- 6. pomocnicze do mapowania */
 const assigned = [], assignLog = [];
 const countCalls = s => (s.replace(/function\s*\(\s*\)\s*{/g, "").match(/[^\s()]+\s*\(\s*\)/g) || []).length;
 const unesc = s => s.replace(/\\(\d{1,3})/g, (m, d) => String.fromCharCode(parseInt(d, 8)))
@@ -224,7 +246,7 @@ function assign(prefix, src, dst, name, type, spec, fnLen, callCnt, lineCnt, mus
       if (strs.join("").length > 300 || !strs.length) strs = [];
       const kw = (Array.isArray(spec) ? spec : []).some(k => strs.some(s => s.includes(k))) || (strs.length && spec[0] === "any");
       const inc = mustInc === "any" || val.toString().includes(mustInc);
-      if ((mustInc === "any" || !mustInc || (mustInc !== "none" && inc) || mustInc === "none") &&
+      if ((mustInc === "any" || !mustInc || mustInc === "none" || inc) &&
           (kw || (!spec[0] && kw === 0)) &&
           (val.length === fnLen || fnLen === "any") &&
           (((callCnt || callCnt === 0) && countCalls(val.toString()) === callCnt) || (!callCnt && callCnt !== 0) || callCnt === "any") &&
@@ -256,6 +278,15 @@ function assignIdx(prefix, src, dst, name, index) {
 const idx = (prefix, name) => { for (const [k, v] of assignLog) if (k === prefix + name) return v; return null; };
 
 /* ============================================================== SETTINGS */
+function cookie(name) {
+  const d = decodeURIComponent(document.cookie).split("; ");
+  for (const c of d) if (c.indexOf(name + "=") === 0) return c.substring(name.length + 1);
+  return "";
+}
+function setCookie(name, val, days = 7) {
+  const dt = new Date(); dt.setTime(dt.getTime() + days * 864e5);
+  document.cookie = name + "=" + encodeURIComponent(val) + "; expires=" + dt.toUTCString() + "; path=/";
+}
 const S = {
   darkMode: 0, putToChest: 10, pingDisplay: 1, fpsDisplay: 1, gaugeTimer: 1, gaugePercentages: 1,
   boxInfo: 1, fireInfo: 1, timePlayed: { active: 1, start: 0, resetClock: true }, daysAlive: 1,
@@ -265,7 +296,7 @@ const S = {
   accChanger: { active: 0, acc: 0 }, totemOnMap: { active: 1, x: 0, y: 0 }, deathOnMap: { active: 1, x: 0, y: 0 },
   drawLeaderboardAllies: 1, ZmaAutoCrown: 1, playerTracers: 1, ColoredSpikes: { texture: "Light", active: 1 },
   vehicleOpacity: .5, listEnabledHacks: { mode: "Bottom Left" }, movementPredictor: 1, blizzardAndSandstorm: 1,
-  Debugger: { mode: "None" }, equipAfterPlace: { active: 1 }, Spectator: { bind: "KeyV", speed: 25 },
+  Debugger: { mode: "None" }, equipAfterPlace: { active: 1 }, Spectator: { bind: "KeyV", speed: 25, active: 0 },
   DropSword: { bind: "Backquote" }, Roof: { active: 1, opacity: .5 }, Hidden: { active: false, bind: "NONE" },
   AutoSteal: { active: false, bind: "KeyQ" }, AutoCraft: { active: false, bind: "KeyC" },
   AutoExtPut: { active: false, bind: "NONE" }, AutoExtTake: { active: false, bind: "NONE" },
@@ -295,44 +326,53 @@ const S = {
   market: { wood: 0, stone: 0, gold: 0, diamond: 0, amethyst: 0, reidite: 0 },
   tokenHolder: { autofarm:0, autoseed:0, autocraft:0, autorecycle:0, craftId:0, recycleId:0, seedToPlace:0, bluecrown:0 }
 };
-function cookie(name) {
-  const d = decodeURIComponent(document.cookie).split("; ");
-  for (const c of d) if (c.indexOf(name + "=") === 0) return c.substring(name.length + 1);
-  return "";
-}
-function setCookie(name, val, days = 7) {
-  const dt = new Date(); dt.setTime(dt.getTime() + days * 864e5);
-  document.cookie = name + "=" + encodeURIComponent(val) + "; expires=" + dt.toUTCString() + "; path=/";
-}
 
-/* -------------------------------------------------- helpers do settings/gui */
-function flatten(obj, path = [], out = []) {
-  for (const k in obj) {
-    const v = obj[k], p = [...path, k];
-    if (typeof v === "object" && v !== null && !Array.isArray(v)) flatten(v, p, out);
-    else out.push(p.join("."));
+function flatPair(o, path = [], out = []) {
+  for (const k in o) {
+    const v = o[k], p = [...path, k];
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) flatPair(v, p, out);
+    else out.push([p.join("."), v]);
   }
   return out;
 }
 function setPath(path, val) {
-  const parts = path.split(".");
-  const last = parts.pop();
+  const parts = path.split("."), last = parts.pop();
   const o = parts.reduce((a, k) => a && a[k], S);
   if (o && last in o) o[last] = val;
 }
+const save = () => { try { localStorage.setItem("settings_all", JSON.stringify(flatPair(S))); } catch (e) {} };
 
-/* ================================================================ GUI */
-const xor = (s) => Array.from(s).map(c => String.fromCharCode(c.charCodeAt(0) ^ 1410065407)).join("");
+/* --- skroty GUI (MUSZA byc przed guiConfig!) --- */
+const cb  = (label, obj, prop, onChange) => ({ type: "checkbox", label, object: obj, property: prop, onChange });
+const rng = (label, obj, prop, min, max, step, onChange) => ({ type: "range", label, object: obj, property: prop, min, max, step, onChange });
+const sel = (label, obj, prop, options, onChange) => ({ type: "select", label, object: obj, property: prop, options, onChange });
+const bind = (label, obj) => ({ type: "bind", label, buttonTextObject: obj, buttonTextProperty: "bind" });
+const btn = (label, action) => ({ type: "button", label, action });
+const txt = (label, obj, prop) => ({ type: "text", label, object: obj, property: prop });
+const sub = (label, subfolder) => ({ type: "subfolder", label, subfolder });
+
+const LANGS = ["Arabic","Bulgarian","Czech","Danish","German","Greek","English (British)","English (American)",
+  "Spanish","Estonian","Finnish","French","Hungarian","Indonesian","Italian","Japanese","Korean","Lithuanian",
+  "Latvian","Norwegian Bokmål","Dutch","Polish","Portuguese (Brazilian)","Portuguese (Other)","Romanian",
+  "Russian","Slovak","Slovenian","Swedish","Turkish","Ukrainian","Chinese (Simplified)","Chinese (Traditional)"];
+
+function tracersFolder() {
+  const g = (n, list) => sub(n, list.map(([key, label]) => cb(label, S.Tracers, key)));
+  return [ g("Forest", [["Boars","Boars"],["GoldenChickens","Golden Chickens"],["GoldenHens","Golden Hens"],["Hawks","Hawks"],["Rabbits","Rabbits"],["Spiders","Spiders"],["Wolfs","Wolfs"]]),
+           g("Jungle", [["Ocelots","Ocelots"],["Crocodiles","Crocodiles"],["Parrots","Parrots"]]),
+           g("Lava", [["BabyLavaDragons","Baby Lava Dragons"],["FireMobs","Fire Mobs"],["LavaDragons","Lava Dragons"]]),
+           g("Ocean", [["Krakens","Krakens"],["Piranhas","Piranhas"]]),
+           g("Sand", [["Sandworms","Sand Worms"],["Crabs","Crabs"],["KingCrabs","King Crabs"],["Vultures","Vultures"]]),
+           g("Winter", [["BabyDragons","Baby Dragons"],["BabyMammoths","Baby Mammoths"],["Bears","Bears"],["Dragons","Dragons"],["Foxes","Foxes"],["Mammoths","Mammoths"],["Penguins","Penguins"]]) ];
+}
 
 const guiConfig = {
-  title: "Void V7 Reborn",
-  align: "right", toggleGuiKey: "NONE", toggleGuiButton: true, draggable: true,
+  title: "Void V7 Reborn", align: "right", toggleGuiKey: "NONE", toggleGuiButton: true, draggable: true,
   fontSize: 18, opacity: .85, width: 880, height: 630,
   folders: {
     Visuals: [
-      cb("Dark Mode", S, "darkMode", afterTexture),
-      cb("Fps", S, "fpsDisplay"), cb("Ping", S, "pingDisplay"), cb("Days Alive", S, "daysAlive"),
-      cb("Time Played", S.timePlayed, "active"), cb("Timer", S, "gaugeTimer"),
+      cb("Dark Mode", S, "darkMode", afterTexture), cb("Fps", S, "fpsDisplay"), cb("Ping", S, "pingDisplay"),
+      cb("Days Alive", S, "daysAlive"), cb("Time Played", S.timePlayed, "active"), cb("Timer", S, "gaugeTimer"),
       cb("LeaderBoard Levels", S, "showLeaderBoardLevels"), cb("Percentages", S, "gaugePercentages"),
       cb("Joins & Leaves", S, "joinsLeaves"), cb("Totem On Map", S.totemOnMap, "active"),
       cb("Death On Map", S.deathOnMap, "active"), cb("LeaderBoard Allies", S, "drawLeaderboardAllies"),
@@ -343,14 +383,10 @@ const guiConfig = {
       sel("Show Hacks", S.listEnabledHacks, "mode", ["Bottom Left", "Top Left", "Off"]),
       sel("Debugger", S.Debugger, "mode", ["None", "No Roofs/Bridges", "Player IDS", "All"]),
       sel("Player Timers", S, "playerTimers", ["All", "Enemys", "None"]),
-      sub("Chests", [ cb("Chest Info", S.chestInfo, "active"),
-        sel("Chest Textures", S.chestInfo, "texture", ["Bright", "Light", "Dark"], afterTexture) ]),
-      sub("Spikes", [ cb("Colored Spikes", S.ColoredSpikes, "active"),
-        sel("Spike Textures", S.ColoredSpikes, "texture", ["Light", "Dark"], () => reloadTextures()) ]),
-      sub("Roofs", [ cb("Smooth Roofs", S, "smoothRoofs", rebuildRoofs), cb("Opaque Roofs", S.Roof, "active", rebuildRoofs),
-        rng("Roofs Opacity", S.Roof, "opacity", .1, 1, .1) ]),
-      sub("Opacitys", [ rng("Vehicles Opacity", S, "vehicleOpacity", .1, 1, .1),
-        rng("Menus Opacity", S, "menuOpacity", .1, 1, .1, applyMenuOpacity) ]),
+      sub("Chests", [ cb("Chest Info", S.chestInfo, "active"), sel("Chest Textures", S.chestInfo, "texture", ["Bright","Light","Dark"], afterTexture) ]),
+      sub("Spikes", [ cb("Colored Spikes", S.ColoredSpikes, "active"), sel("Spike Textures", S.ColoredSpikes, "texture", ["Light","Dark"], reloadTextures) ]),
+      sub("Roofs", [ cb("Smooth Roofs", S, "smoothRoofs"), cb("Opaque Roofs", S.Roof, "active"), rng("Roofs Opacity", S.Roof, "opacity", .1, 1, .1) ]),
+      sub("Opacitys", [ rng("Vehicles Opacity", S, "vehicleOpacity", .1, 1, .1), rng("Menus Opacity", S, "menuOpacity", .1, 1, .1, applyMenuOpacity) ]),
       rng("Brightness", S, "canvasBrightness", .5, 1.5, .1, applyBrightness)
     ],
     Tracers: tracersFolder(),
@@ -365,10 +401,9 @@ const guiConfig = {
       cb("Extractor Take", S.AutoExtTake, "active"), cb("Extractor Put", S.AutoExtPut, "active"),
       cb("Bread Take", S.AutoBreadTake, "active"), cb("Bread Put", S.AutoBreadPut, "active"),
       sub("Aimbot Settings", [ cb("Aimbot", S.Aimbot, "active"), cb("Show Range", S.Aimbot, "rangeVisual"),
-        sel("Attack Mode", S.Aimbot, "mode", ["Only Attack", "Attack & Chase", "Rabbit Chase"]),
+        sel("Attack Mode", S.Aimbot, "mode", ["Only Attack","Attack & Chase","Rabbit Chase"]),
         rng("Bow Range", S.Aimbot, "BowRange", 100, 500, 10) ]),
-      sub("Auto Build Settings", [ cb("Auto Build", S.AutoBuild, "active"),
-        sel("Mode", S.AutoBuild, "mode", ["Bridges", "Roofs", "Plots"]) ]),
+      sub("Auto Build Settings", [ cb("Auto Build", S.AutoBuild, "active"), sel("Mode", S.AutoBuild, "mode", ["Bridges","Roofs","Plots"]) ]),
       sub("Spectator Settings", [ cb("Spectator", S.Spectator, "active"), rng("Speed", S.Spectator, "speed", 10, 100, 5) ]),
       rng("Put To Chest", S, "putToChest", 10, 8000, 1)
     ],
@@ -376,9 +411,7 @@ const guiConfig = {
       sub("Auto Craft Settings", [ cb("Auto Craft", S.AutoCraft, "active"), bind("AutoCraft Key:", S.AutoCraft) ]),
       sub("Auto Recycle Settings", [ cb("Auto Recycle", S.AutoRecycle, "active"), bind("AutoRecycle Key:", S.AutoRecycle) ]),
       sub("Smart Craft Settings", [ cb("Smart Craft", S.SmartCraft, "active"), bind("SmartCraft Key:", S.SmartCraft),
-        sel("Craft Mode", S.SmartCraft, "option", ["Reidite Spike Doors","Amethyst Spike Doors","Reidite Walls",
-          "Reidite Spikes","Amethyst Spikes","Diamond Spikes","Gold Spikes","Reidite Swords","Reidite Spears",
-          "Reidite Helmets","Reidite Shields"]),
+        sel("Craft Mode", S.SmartCraft, "option", ["Reidite Spike Doors","Amethyst Spike Doors","Reidite Walls","Reidite Spikes","Amethyst Spikes","Diamond Spikes","Gold Spikes","Reidite Swords","Reidite Spears","Reidite Helmets","Reidite Shields"]),
         rng("Craft Amount", S.SmartCraft, "amount", 1, 1000, 1) ])
     ],
     Spiking: [
@@ -406,10 +439,8 @@ const guiConfig = {
       sub("Auto Bottle Settings", [ cb("Auto Bottle", S.ZmaAutoBottle, "enabled"), rng("Health", S.ZmaAutoBottle, "health", 10, 90, 1) ])
     ],
     Translate: [
-      sub("Translate Your Messages", [ cb("Your Messages", S.Translation, "translateSent"),
-        sel("Translate To Language", S.Translation, "sentLang", LANGS) ]),
-      sub("Translate Others Messages", [ cb("Others Messages", S.Translation, "translateRecieved"),
-        sel("Translate To Language", S.Translation, "recievedLang", LANGS) ])
+      sub("Translate Your Messages", [ cb("Your Messages", S.Translation, "translateSent"), sel("Translate To Language", S.Translation, "sentLang", LANGS) ]),
+      sub("Translate Others Messages", [ cb("Others Messages", S.Translation, "translateRecieved"), sel("Translate To Language", S.Translation, "recievedLang", LANGS) ])
     ],
     Token: [
       txt("Token", S.localToken, "Token"), txt("Token ID", S.localToken, "TokenID"),
@@ -423,8 +454,7 @@ const guiConfig = {
       bind("AutoFire Key:", S.AutoFire), bind("AutoBuild Key:", S.AutoBuild), bind("AutoCrown Key:", S.AutoCrown),
       bind("AutoTotem Key:", S.AutoTotem), bind("AutoSteal Key:", S.AutoSteal), bind("Bread Take Key:", S.AutoBreadTake),
       bind("Bread Put Key:", S.AutoBreadPut), bind("AutoEmerald Key:", S.AutoEmerald),
-      bind("Extractor Take Key:", S.AutoExtTake), bind("Extractor Put Key:", S.AutoExtPut),
-      bind("AutoFurnace:", S.AutoFurnace)
+      bind("Extractor Take Key:", S.AutoExtTake), bind("Extractor Put Key:", S.AutoExtPut), bind("AutoFurnace:", S.AutoFurnace)
     ],
     Player: [
       sub("Skin", [ cb("Skin Changer", S.skinChanger, "active", () => refreshSkin("skin")), rng("Skin ID", S.skinChanger, "skin", 0, 270, 1, () => refreshSkin("skin")) ]),
@@ -442,140 +472,65 @@ const guiConfig = {
     ]
   }
 };
-const LANGS = ["Arabic","Bulgarian","Czech","Danish","German","Greek","English (British)","English (American)",
-  "Spanish","Estonian","Finnish","French","Hungarian","Indonesian","Italian","Japanese","Korean","Lithuanian",
-  "Latvian","Norwegian Bokmål","Dutch","Polish","Portuguese (Brazilian)","Portuguese (Other)","Romanian",
-  "Russian","Slovak","Slovenian","Swedish","Turkish","Ukrainian","Chinese (Simplified)","Chinese (Traditional)"];
-
-/* skroty do budowy GUI */
-const cb  = (label, obj, prop, onChange) => ({ type: "checkbox", label, object: obj, property: prop, onChange });
-const rng = (label, obj, prop, min, max, step, onChange) => ({ type: "range", label, object: obj, property: prop, min, max, step, onChange });
-const sel = (label, obj, prop, options, onChange) => ({ type: "select", label, object: obj, property: prop, options, onChange });
-const bind = (label, obj) => ({ type: "bind", label, buttonTextObject: obj, buttonTextProperty: "bind" });
-const btn = (label, action) => ({ type: "button", label, action });
-const txt = (label, obj, prop) => ({ type: "text", label, object: obj, property: prop });
-const sub = (label, subfolder) => ({ type: "subfolder", label, subfolder });
-const save = () => { try { localStorage.setItem("settings_all", JSON.stringify(flatPair(S))); } catch (e) {} };
-
-function flatPair(o, path = [], out = []) {
-  for (const k in o) {
-    const v = o[k], p = [...path, k];
-    if (typeof v === "object" && v !== null && !Array.isArray(v)) flatPair(v, p, out);
-    else out.push([p.join("."), v]);
-  }
-  return out;
-}
-const MENU = ["darkMode","putToChest","pingDisplay","fpsDisplay","gaugeTimer","gaugePercentages","boxInfo","fireInfo",
- "timePlayed.active","timePlayed.start","timePlayed.resetClock","daysAlive","chestInfo.texture","chestInfo.active",
- "playerTimers","smoothRoofs","joinsLeaves","menuOpacity","buildingInfo","playersOnTop","skinChanger.active",
- "skinChanger.skin","bagChanger.active","bagChanger.bag","bookChanger.active","bookChanger.book","accChanger.active",
- "accChanger.acc","totemOnMap.active","totemOnMap.x","totemOnMap.y","deathOnMap.active","deathOnMap.x","deathOnMap.y",
- "drawLeaderboardAllies","ZmaAutoCrown","playerTracers","ColoredSpikes.texture","ColoredSpikes.active","vehicleOpacity",
- "listEnabledHacks.mode","movementPredictor","blizzardAndSandstorm","Debugger.mode","Spectator.bind","Spectator.speed",
- "DropSword.bind","Roof.active","Roof.opacity","Hidden.active","Hidden.bind","AutoSteal.active","AutoSteal.bind",
- "AutoCraft.active","AutoCraft.bind","AutoExtPut.active","AutoExtPut.bind","AutoExtTake.active","AutoExtTake.bind",
- "AutoBreadTake.active","AutoBreadTake.bind","AutoBreadPut.active","AutoBreadPut.bind","AutoRecycle.active",
- "AutoRecycle.bind","SmartCraft.active","SmartCraft.option","SmartCraft.amount","Xray.active","Xray.opacity","Xray.bind",
- "AutoWall.active","AutoWall.mode","AutoWall.bind","AutoSpike.active","AutoSpike.mode","AutoSpike.bind","AutoSpike.speed",
- "AutoCrown.active","AutoCrown.bind","AutoTotem.active","AutoTotem.bind","AutoBuild.active","AutoBuild.bind","AutoBuild.mode",
- "AutoFire.active","AutoFire.bind","Aimbot.active","Aimbot.bind","Aimbot.angle","Aimbot.mode","Aimbot.rangeVisual",
- "Aimbot.BowRange","AutoIce.active","AutoRespawn.active","AutoBook.active","ZmaAutoBottle.enabled","ZmaAutoBottle.health",
- "AutoEmerald.active","AutoEmerald.bind","AutoEmerald.angle","AutoTame.active","AutoTame.bind","AutoTame.angle",
- "AutoLand.active","AutoHat.active","AutoDiving.active","AutoUnlock.active","AutoSeed.active","AutoFarm.active",
- "AutoFarm.bind","AutoFarm.angle","AutoFarm.TLX","AutoFarm.TLY","AutoFarm.BRX","AutoFarm.BRY","AutoFarm.SX","AutoFarm.SY",
- "PathFinder.active","PathFinder.bind","PathFinder.End.x","PathFinder.End.y","PathFinder.inventory","PathFinder.lastKit",
- "Translation.recievedLang","Translation.sentLang","Translation.translateSent","Translation.translateRecieved",
- "ZmaRedGold.active","ZmaRedGold.bind","Tracers.Krakens","Tracers.Sandworms","Tracers.BabyDragons","Tracers.BabyLavaDragons",
- "Tracers.BabyMammoths","Tracers.Bears","Tracers.Boars","Tracers.Crabs","Tracers.Dragons","Tracers.FireMobs","Tracers.Foxes",
- "Tracers.Hawks","Tracers.KingCrabs","Tracers.LavaDragons","Tracers.Mammoths","Tracers.Penguins","Tracers.Piranhas",
- "Tracers.Rabbits","Tracers.Spiders","Tracers.Vultures","Tracers.Wolfs","Tracers.GoldenHens","Tracers.GoldenChickens",
- "Tracers.Ocelots","Tracers.Crocodiles","Tracers.Parrots","canvasBrightness","localToken.Token","localToken.TokenID",
- "showLeaderBoardLevels","increasedZoom","market.wood","market.stone","market.gold","market.diamond","market.amethyst",
- "market.reidite","tokenHolder.autofarm","tokenHolder.autoseed","tokenHolder.autocraft","tokenHolder.autorecycle",
- "tokenHolder.craftId","tokenHolder.recycleId","tokenHolder.seedToPlace","AutoFarm.whitelist","SmartCraft.bind",
- "tokenHolder.bluecrown","AutoFurnace.active","AutoFurnace.bind","equipAfterPlace.active","treasureChestOnTop"];
-
-function tracersFolder() {
-  const g = (n, props) => sub(n, props.map(p => cb(p, S.Tracers, p)));
-  return [ g("Forest", ["Boars","GoldenChicken","GoldenHen","Hawks","Rabbits","Spiders","Wolfs"]),
-           g("Jungle", ["Ocelots","Crocodiles","Parrots"]),
-           g("Lava", ["BabyLavaDragons","FireMobs","LavaDragons"]),
-           g("Ocean", ["Krakens","Piranhas"]),
-           g("Sand", ["Sandworms","Crabs","KingCrabs","Vultures"]),
-           g("Winter", ["BabyDragons","BabyMammoths","Bears","Dragons","Foxes","Mammoths","Penguins"]) ];
-}
 
 /* ------------------------------------------------------------- GUI klasa */
+const xor = (s) => Array.from(s).map(c => String.fromCharCode(c.charCodeAt(0) ^ 1410065407)).join("");
+
 class Gui {
-  constructor(cfg) { this.cfg = cfg; this.container = null; this.folderBtns = []; this.content = null; this.curFolder = null; }
+  constructor(cfg) { this.cfg = cfg; this.container = null; this.folderBtns = []; this.content = null; }
   saveGui() { localStorage.setItem("guiSettings", JSON.stringify([this.cfg.align, this.cfg.toggleGuiKey, this.cfg.toggleGuiButton, this.cfg.draggable, this.cfg.fontSize, this.cfg.opacity, this.cfg.width, this.cfg.height])); }
   build() {
+    if (this.container) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = "https://fonts.googleapis.com/css2?family=Baloo+Paaji&display=swap";
-    link.onload = () => this._build();
     document.head.appendChild(link);
-    setTimeout(() => this._build(), 800);
+    this._build();
   }
   _build() {
     if (this.container) return;
     const c = document.createElement("div");
-    this.container = c;
-    c.id = xor("voidGui");
+    this.container = c; c.id = xor("voidGui");
     Object.assign(c.style, { position: "fixed", width: this.cfg.width + "px", height: this.cfg.height + "px",
       background: "rgb(20,20,20)", border: "8px solid rgb(20,20,20)", borderRadius: "8px", zIndex: 9999,
       boxShadow: "0 6px 12px rgba(0,0,0,.4)", display: "flex", flexDirection: "column", boxSizing: "border-box",
-      opacity: this.cfg.opacity, cursor: "grab", fontFamily: "Baloo Paaji, sans-serif" });
+      opacity: this.cfg.opacity, cursor: "grab", fontFamily: "Baloo Paaji, sans-serif", userSelect: "none" });
     this._place(c, this.cfg.align);
     document.body.appendChild(c);
 
     const title = document.createElement("div");
     title.textContent = this.cfg.title;
-    Object.assign(title.style, { color: "#fff", fontSize: this.cfg.fontSize + 8 + "px", padding: "10px 12px",
-      display: "flex", justifyContent: "space-between", alignItems: "center" });
+    Object.assign(title.style, { color: "#fff", fontSize: this.cfg.fontSize + 8 + "px", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" });
     c.appendChild(title);
-
-    const btn = document.createElement("button");
-    btn.textContent = "Customise";
-    Object.assign(btn.style, { background: "rgb(45,45,45)", color: "#fff", border: "none", borderRadius: "5px",
-      padding: "6px 12px", cursor: "pointer", marginLeft: "auto", fontSize: this.cfg.fontSize + "px" });
-    title.appendChild(btn);
+    const cbtn = document.createElement("button");
+    cbtn.textContent = "Customise";
+    Object.assign(cbtn.style, { background: "rgb(45,45,45)", color: "#fff", border: "none", borderRadius: "5px", padding: "6px 12px", cursor: "pointer", marginLeft: "auto", fontSize: this.cfg.fontSize + "px" });
+    title.appendChild(cbtn);
 
     const main = document.createElement("div");
     Object.assign(main.style, { display: "flex", height: this.cfg.height - 85 + "px", borderRadius: "15px" });
     c.appendChild(main);
-
     const sidebar = document.createElement("div");
-    Object.assign(sidebar.style, { width: "35%", color: "#fff", background: "rgb(30,30,30)", borderRadius: "8px",
-      overflowY: "auto", padding: "8px", fontSize: this.cfg.fontSize + 6 + "px", display: "flex",
-      flexDirection: "column", gap: "10px", borderRight: "3.5px solid #1e1e1e" });
+    Object.assign(sidebar.style, { width: "35%", color: "#fff", background: "rgb(30,30,30)", borderRadius: "8px", overflowY: "auto", padding: "8px", fontSize: this.cfg.fontSize + 6 + "px", display: "flex", flexDirection: "column", gap: "10px" });
     main.appendChild(sidebar);
-
     const content = document.createElement("div");
     this.content = content;
-    content.id = xor("voidContent");
-    Object.assign(content.style, { width: "65%", background: "rgb(30,30,30)", color: "#fff", padding: "8px",
-      overflowY: "auto", display: "flex", flexDirection: "column", borderRadius: "12px" });
+    Object.assign(content.style, { width: "65%", background: "rgb(30,30,30)", color: "#fff", padding: "8px", overflowY: "auto", display: "flex", flexDirection: "column", borderRadius: "12px" });
     main.appendChild(content);
 
     Object.keys(this.cfg.folders).forEach(name => {
       const b = document.createElement("button");
       b.textContent = name;
-      Object.assign(b.style, { background: "rgb(51,51,51)", color: "#fff", border: "none", padding: "8px 20px",
-        borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: this.cfg.fontSize + 6 + "px" });
-      b.onclick = () => { this.renderFolder(name); this.folderBtns.forEach(x => x.classList.remove("active")); b.classList.add("active"); b.blur(); };
-      sidebar.appendChild(b);
-      this.folderBtns.push(b);
+      Object.assign(b.style, { background: "rgb(51,51,51)", color: "#fff", border: "none", padding: "8px 20px", borderRadius: "8px", cursor: "pointer", textAlign: "left", fontSize: this.cfg.fontSize + 6 + "px" });
+      b.onclick = () => { this.renderFolder(name); this.folderBtns.forEach(x => x.style.outline = ""); b.style.outline = "2px solid #888"; b.blur(); };
+      sidebar.appendChild(b); this.folderBtns.push(b);
     });
     this._drag(c, title);
     this._customise();
-    btn.onclick = () => this.overlay.style.display = "flex";
-
-    document.addEventListener("keydown", e => {
-      if (this.cfg.toggleGuiKey !== "NONE" && e.code === this.cfg.toggleGuiKey) this.toggle();
-    });
+    cbtn.onclick = () => this.overlay.style.display = "flex";
+    document.addEventListener("keydown", e => { if (this.cfg.toggleGuiKey !== "NONE" && e.code === this.cfg.toggleGuiKey) this.toggle(); });
     const first = Object.keys(this.cfg.folders)[0];
-    if (first) { this.renderFolder(first); this.folderBtns[0] && this.folderBtns[0].classList.add("active"); }
+    if (first) this.renderFolder(first);
   }
   _place(el, align) {
     el.style.top = align === "center" ? "50%" : "0%";
@@ -585,75 +540,61 @@ class Gui {
   }
   _drag(el, handle) {
     let on = false, ox = 0, oy = 0;
-    handle.addEventListener("mousedown", e => {
-      if (e.target.tagName === "BUTTON" || e.target.type === "range") return;
-      on = true; ox = e.clientX - el.offsetLeft; oy = e.clientY - el.offsetTop;
-    });
+    handle.addEventListener("mousedown", e => { if (e.target.tagName === "BUTTON") return; on = true; ox = e.clientX - el.offsetLeft; oy = e.clientY - el.offsetTop; });
     document.addEventListener("mousemove", e => { if (on) { el.style.left = e.clientX - ox + "px"; el.style.top = e.clientY - oy + "px"; el.style.transform = ""; } });
     document.addEventListener("mouseup", () => on = false);
   }
-  toggle() {
-    const g = $(xor("voidGui"));
-    if (g) g.style.display = g.style.display === "none" ? "flex" : "none";
-  }
+  toggle() { const g = $(xor("voidGui")); if (g) g.style.display = g.style.display === "none" ? "flex" : "none"; }
   _customise() {
-    const o = document.createElement("div");
-    this.overlay = o;
-    Object.assign(o.style, { position: "fixed", inset: "0", background: "rgba(0,0,0,.5)", zIndex: 10000,
-      display: "none", alignItems: "center", justifyContent: "center" });
+    const o = document.createElement("div"); this.overlay = o;
+    Object.assign(o.style, { position: "fixed", inset: "0", background: "rgba(0,0,0,.5)", zIndex: 10000, display: "none", alignItems: "center", justifyContent: "center" });
     const box = document.createElement("div");
     Object.assign(box.style, { background: "rgb(30,30,30)", padding: "20px", borderRadius: "12px", color: "#fff", width: "420px" });
     o.appendChild(box);
     const mk = (label, min, max, step, get, set) => {
       const row = document.createElement("div"); row.style.marginBottom = "10px";
       const l = document.createElement("div"); l.textContent = label; l.style.fontSize = "13px";
-      const i = document.createElement("input"); i.type = "range"; i.min = min; i.max = max; i.step = step; i.value = get();
-      i.style.width = "100%"; i.oninput = () => set(Number(i.value));
+      const i = document.createElement("input"); i.type = "range"; i.min = min; i.max = max; i.step = step; i.value = get(); i.style.width = "100%";
+      i.oninput = () => set(Number(i.value));
       row.appendChild(l); row.appendChild(i); box.appendChild(row);
     };
     mk("Width", 400, 1000, 10, () => this.cfg.width, v => { this.cfg.width = v; this.container.style.width = v + "px"; });
     mk("Height", 300, 1000, 10, () => this.cfg.height, v => { this.cfg.height = v; this.container.style.height = v + "px"; });
-    mk("Font Size", 10, 18, 1, () => this.cfg.fontSize, v => { this.cfg.fontSize = v; this.rebuild(); });
+    mk("Font Size", 10, 18, 1, () => this.cfg.fontSize, v => { this.cfg.fontSize = v; });
     mk("Opacity", .1, 1, .01, () => this.cfg.opacity, v => { this.cfg.opacity = v; this.container.style.opacity = v; });
     const al = document.createElement("select");
     ["left","center","right"].forEach(v => al.appendChild(new Option(v, v)));
     al.value = this.cfg.align; al.onchange = () => { this.cfg.align = al.value; this._place(this.container, al.value); };
     box.appendChild(al);
     const close = document.createElement("button");
-    close.textContent = "Close"; Object.assign(close.style, { marginTop: "14px", padding: "8px 16px", background: "#444", color: "#fff", border: "0", borderRadius: "6px", cursor: "pointer" });
+    close.textContent = "Close";
+    Object.assign(close.style, { marginTop: "14px", padding: "8px 16px", background: "#444", color: "#fff", border: "0", borderRadius: "6px", cursor: "pointer" });
     close.onclick = () => { o.style.display = "none"; this.saveGui(); };
     box.appendChild(close);
     document.body.appendChild(o);
   }
-  rebuild() { this.container.remove(); this.container = null; this.folderBtns = []; this._build(); }
   renderFolder(name) {
-    this.curFolder = name;
     const c = this.content; c.innerHTML = "";
     const h = document.createElement("div");
     h.textContent = name;
-    Object.assign(h.style, { color: "#fff", fontSize: this.cfg.fontSize + 4 + "px", padding: "8px 12px",
-      background: "#333", borderRadius: "5px", marginBottom: "8px" });
+    Object.assign(h.style, { color: "#fff", fontSize: this.cfg.fontSize + 4 + "px", padding: "8px 12px", background: "#333", borderRadius: "5px", marginBottom: "8px" });
     c.appendChild(h);
-    const add = (item, indent) => this._item(c, item, indent || 0);
     (this.cfg.folders[name] || []).forEach(item => {
       if (item.type === "subfolder") {
         const wrap = document.createElement("div");
         Object.assign(wrap.style, { background: "#2a2a2a", borderRadius: "4px", marginBottom: "4px" });
-        const head = document.createElement("div");
-        head.textContent = item.label;
+        const head = document.createElement("div"); head.textContent = item.label;
         Object.assign(head.style, { color: "#fff", padding: "6px 10px", cursor: "pointer", fontSize: this.cfg.fontSize + 2 + "px" });
-        const body = document.createElement("div");
-        Object.assign(body.style, { display: "none", padding: "6px 10px" });
+        const body = document.createElement("div"); body.style.display = "none"; body.style.padding = "6px 10px";
         head.onclick = () => body.style.display = body.style.display === "none" ? "block" : "none";
         wrap.appendChild(head); wrap.appendChild(body); c.appendChild(wrap);
         (item.subfolder || []).forEach(si => this._item(body, si, 1));
-      } else add(item, 0);
+      } else this._item(c, item, 0);
     });
   }
   _item(root, item, indent) {
     const row = document.createElement("div");
-    Object.assign(row.style, { display: "flex", alignItems: "center", background: "#2a2a2a", padding: "3px 10px",
-      borderRadius: "4px", marginBottom: "4px", marginLeft: indent ? "14px" : "0" });
+    Object.assign(row.style, { display: "flex", alignItems: "center", background: "#2a2a2a", padding: "3px 10px", borderRadius: "4px", marginBottom: "4px", marginLeft: indent ? "14px" : "0", gap: "6px" });
     const lbl = document.createElement("span");
     lbl.textContent = item.label;
     Object.assign(lbl.style, { color: "#fff", flexGrow: 1, fontSize: this.cfg.fontSize + "px" });
@@ -663,23 +604,20 @@ class Gui {
 
     if (item.type === "checkbox") {
       const i = document.createElement("input"); i.type = "checkbox"; i.checked = !!val();
-      i.onchange = () => setv(Number(i.checked));
-      row.appendChild(i);
+      i.onchange = () => setv(Number(i.checked)); row.appendChild(i);
     } else if (item.type === "range") {
       const i = document.createElement("input"); i.type = "range"; i.min = item.min; i.max = item.max; i.step = item.step || 1; i.value = val();
       const n = document.createElement("input"); n.type = "number"; n.min = item.min; n.max = item.max; n.step = item.step || 1; n.value = val(); n.style.width = "70px";
-      i.oninput = () => { n.value = i.value; }; i.onchange = () => setv(Number(i.value));
+      i.oninput = () => n.value = i.value; i.onchange = () => setv(Number(i.value));
       n.onchange = () => { i.value = n.value; setv(Number(n.value)); };
       row.appendChild(i); row.appendChild(n);
     } else if (item.type === "select") {
       const s = document.createElement("select"); s.style.background = "#444"; s.style.color = "#fff";
       (item.options || []).forEach(o => s.appendChild(new Option(o, o)));
-      s.value = val(); s.onchange = () => setv(s.value);
-      row.appendChild(s);
+      s.value = val(); s.onchange = () => setv(s.value); row.appendChild(s);
     } else if (item.type === "text") {
-      const i = document.createElement("input"); i.type = "text"; i.value = val(); i.style.background = "#444"; i.style.color = "#fff";
-      i.onchange = () => setv(i.value);
-      row.appendChild(i);
+      const i = document.createElement("input"); i.type = "text"; i.value = val(); i.style.background = "#444"; i.style.color = "#fff"; i.style.width = "120px";
+      i.onchange = () => setv(i.value); row.appendChild(i);
     } else if (item.type === "bind") {
       const b = document.createElement("button");
       b.textContent = item.buttonTextObject[item.buttonTextProperty] || "NONE";
@@ -695,11 +633,9 @@ class Gui {
       };
       row.appendChild(b);
     } else if (item.type === "button") {
-      const b = document.createElement("button");
-      b.textContent = "Run";
+      const b = document.createElement("button"); b.textContent = "Run";
       Object.assign(b.style, { background: "#444", color: "#fff", border: "0", borderRadius: "4px", padding: "2px 14px", cursor: "pointer" });
-      b.onclick = () => { item.action && item.action(); b.blur(); };
-      row.appendChild(b);
+      b.onclick = () => { item.action && item.action(); b.blur(); }; row.appendChild(b);
     }
     root.appendChild(row);
   }
@@ -707,45 +643,50 @@ class Gui {
 let gui = null;
 function applyBrightness() { const c = $("game_canvas"); if (c) c.style.filter = "brightness(" + S.canvasBrightness + ")"; }
 function applyMenuOpacity() {
-  ["shop_market","option_in_game","sure_delete","cancel_sure_delete","shop_starterkit","recipe_craft","home_craft","chronotownequest","chronoquest","sign_window","team_box"]
+  ["shop_market","option_in_game","sure_delete","cancel_sure_delete","shop_starterkit","recipe_craft","home_craft","chronoquest","sign_window","team_box"]
     .forEach(id => { const e = $(id); if (e) e.style.opacity = S.Hidden.active ? 1 : S.menuOpacity; });
 }
-function afterTexture() { if (S.darkMode) { S.ColoredSpikes.texture = "Dark"; S.chestInfo.texture = "Dark"; } else { S.ColoredSpikes.texture = "Light"; S.chestInfo.texture = "Light"; } reloadTextures(); }
-
-/* ---------------------- wlasne tekstury (spike/door/skrzynia) z repo Voida */
-const TEX = {
-  Light: { WOOD_SPIKE_ALLY:"69",STONE_SPIKE_ALLY:"65",GOLD_SPIKE_ALLY:"54",DIAMOND_SPIKE_ALLY:"38",AMETHYST_SPIKE_ALLY:"3",REIDITE_SPIKE_ALLY:"58",
-           WOOD_SPIKE_ENEMY:"72",STONE_SPIKE_ENEMY:"68",GOLD_SPIKE_ENEMY:"57",DIAMOND_SPIKE_ENEMY:"41",AMETHYST_SPIKE_ENEMY:"6",REIDITE_SPIKE_ENEMY:"61" },
-  Dark:  { WOOD_SPIKE_ALLY:"34",STONE_SPIKE_ALLY:"30",GOLD_SPIKE_ALLY:"22",DIAMOND_SPIKE_ALLY:"17",AMETHYST_SPIKE_ALLY:"13",REIDITE_SPIKE_ALLY:"26",
-           WOOD_SPIKE_ENEMY:"37",STONE_SPIKE_ENEMY:"33",GOLD_SPIKE_ENEMY:"25",DIAMOND_SPIKE_ENEMY:"21",AMETHYST_SPIKE_ENEMY:"16",REIDITE_SPIKE_ENEMY:"29" }
-};
-const TEX_BASE = "https://raw.githubusercontent.com/shwtdev/Void_V6/refs/heads/main/";
-const spikeTex = {};
-function reloadTextures() {
-  const set = TEX[S.ColoredSpikes.texture] || TEX.Light;
-  for (const k in set) { if (!spikeTex[k]) spikeTex[k] = new Image(); spikeTex[k].src = TEX_BASE + set[k] + ".png"; }
+function afterTexture() {
+  if (S.darkMode) { S.ColoredSpikes.texture = "Dark"; S.chestInfo.texture = "Dark"; }
+  else { S.ColoredSpikes.texture = "Light"; S.chestInfo.texture = "Light"; }
+  reloadTextures();
 }
 
-/* ============================================================ INSTALACJA */
+/* -------------------------------------- wlasne tekstury spike/door (Void) */
+const TEX_BASE = "https://raw.githubusercontent.com/shwtdev/Void_V6/refs/heads/main/";
+const TEX = {
+  Light: { WOOD_SPIKE_ALLY:"69",STONE_SPIKE_ALLY:"65",GOLD_SPIKE_ALLY:"54",DIAMOND_SPIKE_ALLY:"38",AMETHYST_SPIKE_ALLY:"3",REIDITE_SPIKE_ALLY:"58",
+           WOOD_SPIKE_ENEMY:"72",STONE_SPIKE_ENEMY:"68",GOLD_SPIKE_ENEMY:"57",DIAMOND_SPIKE_ENEMY:"41",AMETHYST_SPIKE_ENEMY:"6",REIDITE_SPIKE_ENEMY:"61",
+           WOOD_DOOR_ALLY:"53",STONE_DOOR_ALLY:"50",GOLD_DOOR_ALLY:"47",DIAMOND_DOOR_ALLY:"45",AMETHYST_DOOR_ALLY:"42",REIDITE_DOOR_ALLY:"49",
+           WOOD_DOOR_ENEMY:"52",STONE_DOOR_ENEMY:"51",GOLD_DOOR_ENEMY:"46",DIAMOND_DOOR_ENEMY:"44",AMETHYST_DOOR_ENEMY:"43",REIDITE_DOOR_ENEMY:"48" },
+  Dark:  { WOOD_SPIKE_ALLY:"34",STONE_SPIKE_ALLY:"30",GOLD_SPIKE_ALLY:"22",DIAMOND_SPIKE_ALLY:"17",AMETHYST_SPIKE_ALLY:"13",REIDITE_SPIKE_ALLY:"26",
+           WOOD_SPIKE_ENEMY:"37",STONE_SPIKE_ENEMY:"33",GOLD_SPIKE_ENEMY:"25",DIAMOND_SPIKE_ENEMY:"21",AMETHYST_SPIKE_ENEMY:"16",REIDITE_SPIKE_ENEMY:"29",
+           WOOD_DOOR_ALLY:"53",STONE_DOOR_ALLY:"50",GOLD_DOOR_ALLY:"47",DIAMOND_DOOR_ALLY:"45",AMETHYST_DOOR_ALLY:"42",REIDITE_DOOR_ALLY:"49",
+           WOOD_DOOR_ENEMY:"52",STONE_DOOR_ENEMY:"51",GOLD_DOOR_ENEMY:"46",DIAMOND_DOOR_ENEMY:"44",AMETHYST_DOOR_ENEMY:"43",REIDITE_DOOR_ENEMY:"48" }
+};
+const texCache = {};
+function tex(key) {
+  if (!key) return null;
+  if (!texCache[key]) { texCache[key] = new Image(); texCache[key].src = TEX_BASE + key + ".png"; }
+  return texCache[key];
+}
+function reloadTextures() { /* tekstury leniwe, wystarczy przeladowac klucze */ for (const k in texCache) delete texCache[k]; }
+
+/* ============================================================ STAN / MAPY */
 const CL = {}, GD = {}, UI = {}, WD = {}, UD = {}, MS = {};
 Object.defineProperties(window, { v2600:{get:()=>CL}, v2601:{get:()=>GD}, v2602:{get:()=>UI}, v2603:{get:()=>WD}, v2604:{get:()=>UD}, v2605:{get:()=>MS} });
-
 let CLIENT=null, WORLD=null, USER=null, GAME=null, OPTS=null;
-let installed = false, running = false;
-let myUid = 0, mapW = 0, mapH = 0;
-const canvasInfo = { width: 0, height: 0 };
+let installed = false, wsReady = false, mapW = 0, mapH = 0, pingSent = 0, pingText = 0, lastGaugeT = Date.now();
 
-/* --- wybierz obiekty gry (duck typing na przechwyconych instancjach) --- */
 function pickObjects() {
   if (!CLIENT) CLIENT = captured.find(o => o && (o.connect || o.message || o.ping || o.timeout));
-  if (!WORLD)  WORLD  = captured.find(o => o && (o.w || o.transition));
+  if (!WORLD)  WORLD  = captured.find(o => o && (o.w || o.transition) && (o.units || o.fast_units));
   if (!GAME)   GAME   = captured.find(o => o && (o.waiting || o.buttons || o.unlock));
   if (!USER)   USER   = captured.find(o => o && (o.alert || o.beta || o.control));
   if (!OPTS)   OPTS   = captured.find(o => o && o.options);
   return !!(CLIENT && WORLD && GAME && USER && OPTS);
 }
 
-/* --- mapowanie zminifikowanych nazw na czytelne --- */
 function mapAll() {
   const F = function () {};
   /* CLIENT */
@@ -784,27 +725,27 @@ function mapAll() {
   assign("client", CLIENT, CL, "units", F, [], 3, 1, "any", "none");
   assign("client", CLIENT, CL, "WQG", F, [" ...","... "], 1, 2, "any", "none");
   assignIdx("client", CLIENT, CL, "WQH", idx("client","WQG") - 1);
-  assign("client", CLIENT, CL, "WQI", F, [], 1, 1, 8, "none", "function(id){if(hiddenUser.inv.max===hiddenUser.inv.can_select.length&&RECIPES[id].id2!==INV.BAG&&hiddenUser.inv.find_item(RECIPES[id].id2)==-1&&!hiddenUser.inv.free_place(RECIPES[id].r)){this.inv_full();return 0;}this.socket[SENDWORD](WINDOW1[JSONWORD1].stringify([7,id]));return 1;}");
-  assign("client", CLIENT, CL, "WQJ", F, [], 0, 0, 8, "none", "function () { hiddenUser.resurrection.open = false; hiddenUser.ghost.enabled = false; hiddenUser.ghost.delay = -1; hiddenUser.ghost.label = null; hiddenUser.ghost.sec = null; hiddenUser.ghost.now = -1; }");
+  assign("client", CLIENT, CL, "WQI", F, [], 1, 1, 8, "none");
+  assign("client", CLIENT, CL, "WQJ", F, [], 0, 0, 8, "none");
   assign("client", CLIENT, CL, "WQK", F, [], 1, 2, 13, "none");
-  assign("client", CLIENT, CL, "WQL", F, [], 2, 1, 5, "none", "function(id,n){hiddenUser.craft.preview=-1;hiddenUser.inv.decrease(id,n,hiddenUser.inv.find_item(id));hiddenUser.craft.update();}");
+  assign("client", CLIENT, CL, "WQL", F, [], 2, 1, 5, "none");
   assign("client", CLIENT, CL, "WQM", F, [], 0, 0, 3, "stringify", "function(){this.socket[SENDWORD](WINDOW2[JSONWORD2].stringify([31]));}");
   assign("client", CLIENT, CL, "WQN", F, [], 1, 0, 3, "stringify", "function(v){this.socket[SENDWORD](WINDOW3[JSONWORD3].stringify([32,v.val,v.id]));}");
   assign("client", CLIENT, CL, "WQO", F, [], 2, 0, 3, "stringify", "function(id,symbol){this.socket[SENDWORD](WINDOW3[JSONWORD5].stringify([33,id,symbol]));}");
-  assign("client", CLIENT, CL, "WQP", F, [], 0, 0, 7, "stringify", "function(){let p=hiddenWorld.fast_units[hiddenUser.uid];if(p){let pi2=Math.PI*2;this.socket[SENDWORD](WINDOW3[JSONWORD3].stringify([10,hiddenUser.craft.preview,Math.floor((((p.angle+pi2)%pi2)*255)/pi2),hiddenUser.craft.mode,]));}}");
+  assign("client", CLIENT, CL, "WQP", F, [], 0, 0, 7, "stringify");
   assignIdx("client", CLIENT, CL, "WQR", idx("client","WQP") + 1);
   assign("client", CLIENT, CL, "WQS", F, [], 1, 0, 3, "stringify", "function(id){this.socket[SENDWORD](WINDOW3[JSONWORD1].stringify([6,id]));}");
   assign("client", CLIENT, CL, "WQQ", F, [], 2, 0, 3, "stringify", "function(id,i){this.socket[SENDWORD](WINDOW1[JSONWORD7].stringify([29,id]));}");
   assign("client", CLIENT, CL, "WQT", F, [], 0, 0, 3, "stringify", "function(){this.socket[SENDWORD](WINDOW2[JSONWORD2].stringify([14]));}");
-  assign("client", CLIENT, CL, "WQU", F, [], 1, 0, 4, "stringify", "function(angle) {let pi2=Math.PI*2;this.socket[SENDWORD]( WINDOW3[JSONWORD3].stringify([4,Math.floor((((angle+pi2)%pi2)*255)/pi2),]));}");
-  assign("client", CLIENT, CL, "WQV", F, [], 1, 0, 4, "stringify", "function(angle){let pi2=Math.PI*2;this.socket[SENDWORD](WINDOW3[JSONWORD3].stringify([3,Math.floor((((angle+pi2)%pi2)*255)/pi2),]));}");
-  assign("client", CLIENT, CL, "WQW", F, [], 1, 0, 3, "stringify", "function(move){this.socket[SENDWORD](WINDOW12[JSONWORD12].stringify([2,move]));}");
+  assign("client", CLIENT, CL, "WQU", F, [], 1, 0, 4, "stringify");
+  assign("client", CLIENT, CL, "WQV", F, [], 1, 0, 4, "stringify");
+  assign("client", CLIENT, CL, "WQW", F, [], 1, 0, 3, "stringify");
   assignIdx("client", CLIENT, CL, "WQX", idx("client","WQW") + 2);
-  assign("client", CLIENT, CL, "WQY", F, [], 0, 2, 7, "none", "function(){hiddenUser.reconnect.enabled=true;if(this._current_id!=this.socket._current_id)return;this._current_id++;this.socket.close();hiddenClient.connect();}");
+  assign("client", CLIENT, CL, "WQY", F, [], 0, 2, 7, "none");
   assign("client", CLIENT, CL, "WQZ", F, ["adsRefresh"], 2, 3, 17, "none");
   assignIdx("client", CLIENT, CL, "WTA", idx("client","WQZ") + 1);
   assignIdx("client", CLIENT, CL, "WTB", idx("client","WTA") + 3);
-  assign("client", CLIENT, CL, "WTC", F, [], 0, 1, 4, "none", "function(){this.timeout_number=0;this.connect_timeout();}");
+  assign("client", CLIENT, CL, "WTC", F, [], 0, 1, 4, "none");
   assign("client", CLIENT, CL, "WTD", F, [], 1, 1, 8, "++");
 
   /* GAME */
@@ -878,18 +819,15 @@ function mapAll() {
   assign("user", USER, UD, "WVF", 0, 0, "any", "any", "any", "any", "any", 4);
   assign("user", USER, UD, "WVG", false, false, "any", "any", "any", "any", "any", 2);
 
-  /* iid z WTU (klucz o wartosci -1) */
   try { for (const k of Object.keys(UD.WTU)) if (UD.WTU[k] === -1) MS.iid = k; } catch (e) {}
 
-  /* derived: pole jednostki po indeksie klucza */
   const d = { 1:"pid", 6:"nangle", 12:"speed", 21:"dist_winter", 31:"tower", 34:"fly", 36:"draw",
               37:"draw_vehicle", 42:"vehicle_fx5", 43:"tower_fx", 44:"hit", 63:"vehicle", 65:"clothe", 66:"ghost" };
   const sample = (WD.units[E.PLAYERS] || [])[0] || (WD.units[E.CHEST] || [])[0];
   if (sample) Object.keys(sample).forEach((k, i) => { if (d[i]) WD[d[i]] = k; if (typeof sample[k] === "function") WD.update = k; });
   const chest = (WD.units[E.CHEST] || [])[0];
   if (chest && WD.hit && chest[WD.hit]) {
-    const anim = Object.keys(chest[WD.hit])[0];
-    WD.anim = anim;
+    const anim = Object.keys(chest[WD.hit])[0]; WD.anim = anim;
     const inner = chest[WD.hit][anim] && Object.keys(chest[WD.hit][anim]);
     if (inner) { WD.o = inner[0]; WD.v = inner[1]; }
   }
@@ -897,31 +835,27 @@ function mapAll() {
   if (roof) Object.keys(roof).forEach((k, i) => { if (i === 15) WD.j = k; if (i === 16) WD.i = k; if (i === 18) WD.opacity = k; });
   log("mapowanie propsow gotowe (" + assigned.length + " pol)");
 }
-    /* ====================================================== HOOKI SIECIOWE */
-let wsOrig = null;
-let sendFn = null, closeFn = null, onopenFn = null;
-const spam = { Aimbot:false, AutoFarm:false, AutoSpike:false, AutoCraft:false, AutoRecycle:false, AutoTotem:false,
-  AutoFire:false, AutoBuild:false, AutoSteal:false, SmartCraft:false, AutoSeed:false, AutoEmerald:false };
+
+/* ====================================================== HOOKI */
+let wsOrig = null, sendFn = null, onopenFn = null, oncloseFn = null;
 const spamStore = {};
-const pkt = { camera:null, build:null, spawn:null };
-let feedDelayFlag = 0, wsReady = false;
+const pkt = { camera: null, build: null };
 
 function hookWebSocket() {
   if (!CL.websocket || wsOrig === CL.websocket) return;
   if (wsOrig) { try { wsOrig.close(); } catch (e) {} }
   wsOrig = CL.websocket;
-  onopenFn = wsOrig.onopen.bind(wsOrig);
+  onopenFn = wsOrig.onopen ? wsOrig.onopen.bind(wsOrig) : null;
   sendFn = wsOrig.send.bind(wsOrig);
-  closeFn = wsOrig.close.bind(wsOrig);
   wsOrig.send = function (data) {
     try {
       if (wsOrig.readyState !== 1) return;
       if (typeof data === "string") {
         const a = JSON.parse(data);
-        if (!pkt.camera && pkt.camera !== 0 && a.length === 3) pkt.camera = a[0];
-        if (!pkt.build && pkt.build !== 0 && a.length === 4) { pkt.build = a[0]; return sendFn(data); }
+        if (pkt.camera == null && a.length === 3) pkt.camera = a[0];
+        if (pkt.build == null && a.length === 4) { pkt.build = a[0]; return sendFn(data); }
         if (a[0] === pkt.build) {
-          if (a[1] === E.TOTEM) { const p = WD.fast_units[WD.uid]; if (p) { S.totemOnMap.x = p.x / (mapW * 100); S.totemOnMap.y = p.y / (mapH * 100); } }
+          if (a[1] === E.TOTEM) { const p = me(); if (p) { S.totemOnMap.x = p.x / (mapW * 100); S.totemOnMap.y = p.y / (mapH * 100); } }
           return sendFn(data);
         }
         if (a[0] === pkt.camera) return sendFn(a);
@@ -931,21 +865,20 @@ function hookWebSocket() {
   };
   wsOrig.onopen = function () {
     wsReady = true;
-    for (const k in spam) { spamStore[k] = S[k].active; S[k].active = false; }
+    for (const k in spamStore) { spamStore[k] = S[k] && S[k].active; if (S[k]) S[k].active = false; }
     onopenFn && onopenFn();
   };
   wsOrig.onclose = function () {
     wsReady = false;
-    for (const k in spam) if (spamStore[k] !== undefined) S[k].active = spamStore[k];
-    CL.WSG && CL.WSG();
+    for (const k in spamStore) if (S[k]) S[k].active = spamStore[k];
+    try { CL.WSG && CL.WSG(); } catch (e) {}
   };
   CL.websocket = wsOrig;
   log("websocket zahookowany");
 }
 
-/* ====================================================== HOOK SETTIMEOUT */
 function hookTimeout() {
-  const orig = setTimeout;
+  const orig = window.setTimeout;
   window.setTimeout = function (fn, ms, ...a) {
     if (arguments.length === 0) throw new Error("setTimeout: 1 argument required");
     if (ms === 33 && !S.Hidden.active) ms = 0;
@@ -954,152 +887,66 @@ function hookTimeout() {
   window.setTimeout.toString = () => "setTimeout() { [native code] }";
 }
 
-/* ====================================================== RYSOWANIE / CANVAS */
-let ctx = null, canvasEl = null;
-function drawText(text, size, stroke, fill, align) {
-  if (!ctx) return;
-  ctx.save();
-  ctx.font = size + "px Baloo Paaji";
-  ctx.lineWidth = 7;
-  ctx.strokeStyle = stroke || "black";
-  ctx.fillStyle = fill || "#fff";
-  ctx.textAlign = align || "left";
-  ctx.strokeText(text, 0, 0);
-  ctx.fillText(text, 0, 0);
-  ctx.restore();
+function hookSpawn() {
+  if (typeof CL.WTB !== "function" || CL.__spawnHooked) return;
+  const orig = CL.WTB;
+  CL.WTB = function (a) {
+    try {
+      mapW = a[20]; mapH = a[21];
+      WD.max_units = a[7];
+      WD.uid = a[9] * WD.max_units;
+      WD.time = a[5];
+      S.timePlayed.start = Date.now(); S.timePlayed.resetClock = false;
+    } catch (e) {}
+    return orig.apply(this, arguments);
+  };
+  CL.__spawnHooked = true;
 }
-function roundRect(c, x, y, w, h, r) {
-  if (w < r * 2) r = w / 2;
-  if (h < r * 2) r = h / 2;
-  c.beginPath();
-  c.moveTo(x + r, y);
-  c.arcTo(x + w, y, x + w, y + h, r);
-  c.arcTo(x + w, y + h, x, y + h, r);
-  c.arcTo(x, y + h, x, y, r);
-  c.arcTo(x, y, x + w, y, r);
-  c.closePath();
+function hookGauges() {
+  if (typeof CL.WSJ !== "function" || CL.__gaugeHooked) return;
+  const orig = CL.WSJ;
+  CL.WSJ = function () { lastGaugeT = Date.now(); return orig.apply(this, arguments); };
+  CL.__gaugeHooked = true;
 }
-function drawImg(c, img, x, y, w, h) { if (img && img.naturalWidth) c.drawImage(img, x, y, w, h); }
+function hookTime() {
+  if (typeof CL.WSK !== "function" || CL.__timeHooked) return;
+  const orig = CL.WSK;
+  CL.WSK = function (d) { WD.time = d; return orig.apply(this, arguments); };
+  CL.__timeHooked = true;
+}
+function hookPing() {
+  if (typeof CL.WSG !== "function" || CL.__pingHooked) return;
+  const os = CL.WSG, oh = CL.WSH;
+  CL.WSG = function () { pingSent = Date.now(); return os.apply(this, arguments); };
+  CL.WSH = function () { if (pingSent) pingText = Date.now() - pingSent; return oh.apply(this, arguments); };
+  CL.__pingHooked = true;
+}
+function hookDrawGame() {
+  const orig = GD.drawGame;
+  if (typeof orig !== "function" || GD.__drawHooked) return;
+  GD.drawGame = function () { const r = orig.apply(this, arguments); try { drawOverlay(); } catch (e) {} return r; };
+  GD.__drawHooked = true;
+}
+function hookCanvas() {
+  canvasEl = $("game_canvas");
+  ctx = canvasEl && canvasEl.getContext("2d");
+  if (ctx && !ctx.__voidAlpha) {
+    const o = ctx.drawImage;
+    ctx.drawImage = function (...a) { if (S.Xray.active && wsReady) ctx.globalAlpha = S.Xray.opacity; return o.apply(this, a); };
+    ctx.__voidAlpha = true;
+  }
+}
 
+/* --------------------------------------------- rysowanie / pomocnicze */
+let ctx = null, canvasEl = null;
+function drawImg(c, img, x, y, w, h) { if (img && img.naturalWidth) c.drawImage(img, x, y, w, h); }
 function me() { return WD.fast_units ? WD.fast_units[WD.uid] : null; }
 function dist(a, b) { return (a && b) ? Math.hypot(a.x - b.x, a.y - b.y) : null; }
 function angleTo(t, f) { return Math.atan2(t.y - f.y, t.x - f.x); }
 function isAlly(pid) { if (pid === USER.id) return true; try { return (UD.WUB || []).includes(pid); } catch (e) { return false; } }
-
-function rebuildRoofs() {}
-function refreshSkin(which) {
-  const p = me(), info = WD.WTN && WD.WTN[USER.id];
-  if (!p || !info) return;
-  const map = { skin:"skinChanger", bag:"bagChanger", acc:"accChanger", book:"bookChanger" };
-  const key = MS && ({ skin:"skin", bag:"bag", acc:"acc", book:"book" })[which];
-  if (key && WD[key] !== undefined) { const v = S[map[which]]; p[WD[key]] = v.active ? v[which] : p[WD[key]]; }
-}
-
-/* hook drawGame -> rysuj overlaye po narysowaniu swiata */
-function hookDrawGame() {
-  const orig = GD.drawGame;
-  if (typeof orig !== "function") return;
-  GD.drawGame = function () {
-    orig.apply(this, arguments);
-    try { drawOverlay(); } catch (e) {}
-  };
-}
-/* hook drawImage -> Xray */
-function hookDrawImage() {
-  if (!ctx || ctx.__voidHooked) return;
-  const orig = ctx.drawImage;
-  ctx.drawImage = function (...a) {
-    if (S.Xray.active && wsReady) ctx.globalAlpha = S.Xray.opacity;
-    return orig.apply(this, a);
-  };
-  ctx.__voidHooked = true;
-}
-
-/* ====================================================== GLOWNA PETLA RYS. */
-function drawOverlay() {
-  if (!ctx || !wsReady) return;
-  const p = me();
-  if (!p) return;
-  const cam = { x: UD.WUF.x, y: UD.WUF.y };
-
-  /* gracze: nazwy, tła, tracery, timery */
-  const players = WD.units[E.PLAYERS] || [];
-  for (const u of players) {
-    const pid = u[WD.pid];
-    if (S.playerTracers && pid !== USER.id) {
-      ctx.save(); ctx.strokeStyle = isAlly(pid) ? "#66ff00" : "#ff2e2e"; ctx.lineWidth = 3.5;
-      ctx.beginPath(); ctx.moveTo(cam.x + p.x, cam.y + p.y); ctx.lineTo(cam.x + u.x, cam.y + u.y); ctx.stroke(); ctx.restore();
-    }
-    if (S.movementPredictor && u.r && (u.x !== u.r.x || u.y !== u.r.y)) {
-      ctx.save(); ctx.strokeStyle = "#ff2e2e"; ctx.lineWidth = 3.5;
-      ctx.beginPath(); ctx.moveTo(cam.x + u.x, cam.y + u.y); ctx.lineTo(cam.x + u.r.x, cam.y + u.r.y); ctx.stroke(); ctx.restore();
-    }
-  }
-
-  /* tracery zwierzat */
-  const tr = [["Krakens",E.KRAKEN,"#000"],["Sandworms",E.SAND_WORM,"#000"],["BabyDragons",E.BABY_DRAGON,"#949494"],
-    ["BabyLavaDragons",E.BABY_LAVA,"#660000"],["BabyMammoths",E.BABY_MAMMOTH,"#949494"],["Bears",E.BEAR,"#949494"],
-    ["Boars",E.BOAR,"#007512"],["Crabs",E.CRAB,"#948f00"],["Dragons",E.DRAGON,"#949494"],["FireMobs",E.FLAME,"#660000"],
-    ["Foxes",E.FOX,"#949494"],["Hawks",E.HAWK,"#007512"],["KingCrabs",E.CRAB_BOSS,"#948f00"],
-    ["LavaDragons",E.LAVA_DRAGON,"#660000"],["Mammoths",E.MAMMOTH,"#949494"],["Penguins",E.PENGUIN,"#949494"],
-    ["Piranhas",E.PIRANHA,"#000c78"],["Rabbits",E.RABBIT,"#007512"],["Spiders",E.SPIDER,"#007512"],
-    ["Vultures",E.VULTURE,"#948f00"],["Wolfs",E.WOLF,"#007512"],["Crocodiles",E.CROCODILE,"#003c12"],
-    ["GoldenChickens",E.GOLDEN_CHICKEN,"#007512"],["GoldenHens",E.GOLDEN_HEN,"#007512"],
-    ["Ocelots",E.OCELOT,"#003c12"],["Parrots",E.PARROT,"#003c12"]];
-  for (const [key, type, col] of tr) {
-    if (!S.Tracers[key]) continue;
-    for (const u of (WD.units[type] || [])) {
-      ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 3.5;
-      ctx.beginPath(); ctx.moveTo(cam.x + p.x, cam.y + p.y); ctx.lineTo(cam.x + u.x, cam.y + u.y); ctx.stroke(); ctx.restore();
-    }
-  }
-
-  /* HUD: fps, ping, dni, czas, procenty */
-  const H = UD.WUY.translate;
-  const hudX = H.x - 120;
-  let hudY = H.y - 50;
-  const line = (txt, color) => { ctx.save(); ctx.font = "30px Baloo Paaji"; ctx.lineWidth = 7; ctx.strokeStyle = "black";
-    ctx.fillStyle = color || "#fff"; ctx.strokeText(txt, hudX, hudY); ctx.fillText(txt, hudX, hudY); ctx.restore(); hudY += 30; };
-  if (S.fpsDisplay) line(fpsText);
-  if (S.pingDisplay && pingText) line(pingText + "ms");
-  if (S.daysAlive) line(UD.WVF + " Day" + (UD.WVF > 1 ? "s" : ""));
-  if (S.timePlayed.active) line(fmtTime(Math.round((Date.now() - S.timePlayed.start) / 1000)));
-
-  /* lista wlaczonych hackow */
-  if (S.listEnabledHacks.mode !== "Off") {
-    let y = S.listEnabledHacks.mode === "Bottom Left" ? innerHeight - 25 : 25;
-    ctx.save(); ctx.font = "18px Baloo Paaji"; ctx.strokeStyle = "black"; ctx.lineWidth = 7; ctx.fillStyle = "#fff";
-    for (const k in S) { if (S[k] && S[k].active && S[k].bind && S[k].bind !== "NONE") { ctx.strokeText(k, 15, y); ctx.fillText(k, 15, y); y += S.listEnabledHacks.mode === "Bottom Left" ? -20 : 20; } }
-    ctx.restore();
-  }
-}
-let fpsText = "0 FPS", pingText = 0, lastFpsT = Date.now(), lastFrameT = Date.now();
-function fmtTime(s) { return s >= 3600 ? (s/3600).toFixed(2)+"h" : s >= 60 ? (s/60).toFixed(2)+"m" : s+"s"; }
-
-/* ====================================================== AUTO-FUNKCJE */
-function nearestPlayer(range, excludeFly) {
-  const p = me(); if (!p) return null;
-  let best = null, bd = range || 550;
-  for (const u of (WD.units[E.PLAYERS] || [])) {
-    const pid = u[WD.pid];
-    if (pid === USER.id || u[WD.ghost]) continue;
-    if (excludeFly && p[WD.fly] !== u[WD.fly]) continue;
-    const d = dist(p, u);
-    if (d !== null && d < bd) { best = u; bd = d; }
-  }
-  return best;
-}
-const WEAPON_RANGE = [133, 203, 110, 120, 143];
-
-function loopAimbot() {
-  if (!S.Aimbot.active) return;
-  const p = me(); if (!p) return;
-  const t = nearestPlayer(600, S.Aimbot.mode !== "Rabbit Chase");
-  if (!t) { S.Aimbot.angle = 0; return; }
-  const rng = WEAPON_RANGE[weaponKind(p.right) - 1] || 0;
-  const d = dist(p, t);
-  if (rng && d <= rng + 4) { S.Aimbot.angle = angleTo(t, p); CL.WQU(S.Aimbot.angle); CL.WQT(); }
-}
+function inv(id) { try { return UD.WUU.WUV[id] || 0; } catch (e) { return 0; } }
+function equip(id) { if (CL.WQR) CL.WQR(id); }
+function firstInv(list) { for (const id of list) if (inv(id)) return id; return -1; }
 function weaponKind(it) {
   if (it == null) return 0;
   if ([ITEM.SWORD,ITEM.SWORD_GOLD,ITEM.SWORD_DIAMOND,ITEM.REIDITE_SWORD,ITEM.SWORD_AMETHYST,ITEM.SWORD_WOOD,ITEM.DRAGON_SWORD,ITEM.LAVA_SWORD,ITEM.PIRATE_SWORD].includes(it)) return 1;
@@ -1108,10 +955,51 @@ function weaponKind(it) {
   if ([ITEM.WOOD_BOW,ITEM.STONE_BOW,ITEM.GOLD_BOW,ITEM.DIAMOND_BOW,ITEM.AMETHYST_BOW,ITEM.REIDITE_BOW,ITEM.DRAGON_BOW].includes(it)) return 6;
   return 0;
 }
-function inv(id) { try { return UD.WUU.WUV[id] || 0; } catch (e) { return 0; } }
-function equip(id) { if (CL.WQR) CL.WQR(id); }
-function firstInv(list) { for (const id of list) if (inv(id)) return id; return -1; }
+const WEAPON_RANGE = [133, 203, 110, 120, 143];
+function wsSend(a) { try { if (wsOrig && wsOrig.readyState === 1 && pkt.build != null) wsOrig.send(JSON.stringify(a)); } catch (e) {} }
+function refreshSkin(which) {
+  const p = me(); if (!p) return;
+  const key = { skin:"skin", bag:"bag", acc:"acc", book:"book" }[which];
+  const cfg = S[which + "Changer"];
+  if (key && WD[key] !== undefined && cfg.active) p[WD[key]] = cfg[which];
+}
+function convert(res, need, item) {
+  const have = S.market[res], n = Math.floor(have / need);
+  for (let i = 0; i < n; i++) CL.WQN({ val: need, id: item });
+  S.market[res] = have % need;
+}
+function backToLobby() { try { if (wsOrig) wsOrig.close(); CL.WSG && CL.WSG(); } catch (e) {} }
+function fmtTime(s) { return s >= 3600 ? (s / 3600).toFixed(2) + "h" : s >= 60 ? (s / 60).toFixed(2) + "m" : s + "s"; }
 
+/* ====================================================== PETLE FUNKCJI */
+let fpsText = "0 FPS", lastFpsT = Date.now(), lastFrameT = Date.now();
+
+function loopAimbot() {
+  if (!S.Aimbot.active) return;
+  const p = me(); if (!p) return;
+  const t = nearestPlayer(600, S.Aimbot.mode !== "Rabbit Chase");
+  if (!t) { S.Aimbot.angle = 0; return; }
+  const rng = WEAPON_RANGE[weaponKind(p.right) - 1] || 0;
+  if (rng && dist(p, t) <= rng + 4) { S.Aimbot.angle = angleTo(t, p); CL.WQU(S.Aimbot.angle); CL.WQT(); }
+}
+function nearestPlayer(range, excludeFly) {
+  const p = me(); if (!p) return null;
+  let best = null, bd = range || 550;
+  for (const u of (WD.units[E.PLAYERS] || [])) {
+    const pid = u[WD.pid];
+    if (pid === USER.id || u[WD.ghost]) continue;
+    if (excludeFly && p[WD.fly] !== u[WD.fly]) continue;
+    const d = dist(p, u); if (d !== null && d < bd) { best = u; bd = d; }
+  }
+  return best;
+}
+function moveTowards(p, tgt, tol) {
+  const dx = p.x - tgt.x, dy = p.y - tgt.y;
+  let m = 0;
+  if (Math.abs(dx) > tol) m += dx > 0 ? 1 : 2;
+  if (Math.abs(dy) > tol) m += dy > 0 ? 8 : 4;
+  CL.WQW(m);
+}
 function loopAutoSpike() {
   if (!S.AutoSpike.active) return;
   const p = me(); if (!p) return;
@@ -1119,10 +1007,7 @@ function loopAutoSpike() {
   if (spike < 0 || UD.WUZ.WVA) return;
   const a = Math.floor((p.angle + Math.PI*2) % (Math.PI*2) * 255 / (Math.PI*2));
   if (S.AutoSpike.mode === "Normal") {
-    for (let i = 0; i < 6; i++) {
-      wsSend([pkt.build, spike, (i*4 + a) % 255, 0]);
-      wsSend([pkt.build, spike, (a - i*4 + 255) % 255, 0]);
-    }
+    for (let i = 0; i < 6; i++) { wsSend([pkt.build, spike, (i*4 + a) % 255, 0]); wsSend([pkt.build, spike, (a - i*4 + 255) % 255, 0]); }
     wsSend([pkt.build, spike, a % 255, 0]);
   } else {
     if (UD.WUZ.WVB !== spike) equip(spike);
@@ -1136,10 +1021,7 @@ function loopAutoWall() {
   if (wall < 0 || UD.WUZ.WVA) return;
   const a = Math.floor((p.angle + Math.PI*2) % (Math.PI*2) * 255 / (Math.PI*2));
   if (S.AutoWall.mode === "Normal") {
-    for (let i = 0; i < 6; i++) {
-      wsSend([pkt.build, wall, (i*4 + a) % 255, 0]);
-      wsSend([pkt.build, wall, (a - i*4 + 255) % 255, 0]);
-    }
+    for (let i = 0; i < 6; i++) { wsSend([pkt.build, wall, (i*4 + a) % 255, 0]); wsSend([pkt.build, wall, (a - i*4 + 255) % 255, 0]); }
     wsSend([pkt.build, wall, a % 255, 0]);
   } else {
     if (UD.WUZ.WVB !== wall) equip(wall);
@@ -1151,14 +1033,12 @@ function loopAutoFire() {
   const p = me(); if (!p || UD.WUZ.WVA) return;
   if (!inv(ITEM.FIRE) && !inv(ITEM.BIG_FIRE)) return;
   const a = Math.floor((p.angle + Math.PI*2) % (Math.PI*2) * 255 / (Math.PI*2));
-  wsSend([pkt.build, ITEM.FIRE, a, 0]);
-  wsSend([pkt.build, ITEM.BIG_FIRE, a, 0]);
+  wsSend([pkt.build, ITEM.FIRE, a, 0]); wsSend([pkt.build, ITEM.BIG_FIRE, a, 0]);
 }
 function loopAutoBuild() {
   if (!S.AutoBuild.active) return;
   const p = me(); if (!p || UD.WUZ.WVA) return;
-  const map = { Bridges:ITEM.BRIDGE, Plots:ITEM.PLOT, Roofs:ITEM.ROOF };
-  const id = map[S.AutoBuild.mode];
+  const id = { Bridges:ITEM.BRIDGE, Plots:ITEM.PLOT, Roofs:ITEM.ROOF }[S.AutoBuild.mode];
   if (!inv(id)) return;
   const a = Math.floor((p.angle + Math.PI*2) % (Math.PI*2) * 255 / (Math.PI*2));
   wsSend([pkt.build, id, a, 0]);
@@ -1171,16 +1051,11 @@ function loopAutoSteal() {
 function loopAutoExt() {
   if (!S.AutoExtTake.active && !S.AutoExtPut.active && !S.AutoSteal.active) return;
   const p = me(); if (!p) return;
-  const types = [E.EXTRACTOR_MACHINE_STONE,E.EXTRACTOR_MACHINE_GOLD,E.EXTRACTOR_MACHINE_DIAMOND,E.EXTRACTOR_MACHINE_AMETHYST,
-    E.EXTRACTOR_MACHINE_REIDITE,E.EXTRACTOR_MACHINE_EMERALD,E.EXTRACTOR_MACHINE_COPPER,E.EXTRACTOR_MACHINE_IRON,
-    E.EXTRACTOR_MACHINE_TOPAZ,E.EXTRACTOR_MACHINE_SAPPHIRE,E.EXTRACTOR_MACHINE_JADE,E.EXTRACTOR_MACHINE_RUBY,
-    E.EXTRACTOR_MACHINE_COAL,E.EXTRACTOR_MACHINE_AQUAMARINE];
-  for (const t of types) for (const x of (WD.units[t] || [])) {
-    if (dist(p, x) < 300) {
-      x[MS.iid] = x.id;
-      if ((S.AutoExtTake.active || S.AutoSteal.active) && (x.info & 65280) >> 8) CL.WSX(x);
-      if (S.AutoExtPut.active && (x.info & 255) < 255) CL.WSU(x, 255);
-    }
+  const types = [E.EXTRACTOR_MACHINE_STONE,E.EXTRACTOR_MACHINE_GOLD,E.EXTRACTOR_MACHINE_DIAMOND,E.EXTRACTOR_MACHINE_AMETHYST,E.EXTRACTOR_MACHINE_REIDITE,E.EXTRACTOR_MACHINE_EMERALD,E.EXTRACTOR_MACHINE_COPPER,E.EXTRACTOR_MACHINE_IRON,E.EXTRACTOR_MACHINE_TOPAZ,E.EXTRACTOR_MACHINE_SAPPHIRE,E.EXTRACTOR_MACHINE_JADE,E.EXTRACTOR_MACHINE_RUBY,E.EXTRACTOR_MACHINE_COAL,E.EXTRACTOR_MACHINE_AQUAMARINE];
+  for (const t of types) for (const x of (WD.units[t] || [])) if (dist(p, x) < 300) {
+    x[MS.iid] = x.id;
+    if ((S.AutoExtTake.active || S.AutoSteal.active) && (x.info & 65280) >> 8) CL.WSX(x);
+    if (S.AutoExtPut.active && (x.info & 255) < 255) CL.WSU(x, 255);
   }
 }
 function loopAutoBread() {
@@ -1200,18 +1075,14 @@ function loopAutoBread() {
 function loopAutoTotem() {
   if (!S.AutoTotem.active) return;
   const p = me(); if (!p || UD.WUD.wait || (UD.WUB || []).length) return;
-  for (const t of (WD.units[E.TOTEM] || [])) {
-    if (!((t.info & 16) >> 4) && t.info < 8 && dist(p, t) < 300) {
-      UD.WUD[WD.pid] = t[WD.pid]; UD.WUD.id = t.id; CL.WQD();
-    }
-  }
+  for (const t of (WD.units[E.TOTEM] || [])) if (!((t.info & 16) >> 4) && t.info < 8 && dist(p, t) < 300) { UD.WUD[WD.pid] = t[WD.pid]; UD.WUD.id = t.id; CL.WQD(); }
 }
 function loopAutoCrown() {
   if (!S.AutoCrown.active) return;
   if (inv(ITEM.CROWN_BLUE)) equip(ITEM.CROWN_BLUE);
   const h = firstInv([ITEM.HAMMER_REIDITE,ITEM.HAMMER_AMETHYST,ITEM.HAMMER_DIAMOND,ITEM.HAMMER_GOLD,ITEM.HAMMER]);
   if (h >= 0) equip(h);
-  CL.WQJ && CL.WQJ();
+  if (CL.WQJ) CL.WQJ();
 }
 function loopAutoEmerald() {
   if (!S.AutoEmerald.active) return;
@@ -1222,13 +1093,6 @@ function loopAutoEmerald() {
   const tgt = { x: pts[bi][0], y: pts[bi][1] };
   moveTowards(p, tgt, 60);
   if (Math.abs(p.x - tgt.x) < 100 && Math.abs(p.y - tgt.y) < 100) { S.AutoEmerald.angle = [-3.68,-5.28,-0.94][bi]; CL.WQU(S.AutoEmerald.angle); CL.WQT(); }
-}
-function moveTowards(p, tgt, tol) {
-  const dx = p.x - tgt.x, dy = p.y - tgt.y;
-  let m = 0;
-  if (Math.abs(dx) > tol) m += dx > 0 ? 1 : 2;
-  if (Math.abs(dy) > tol) m += dy > 0 ? 8 : 4;
-  CL.WQW(m);
 }
 function loopAutoFarm() {
   if (!S.AutoFarm.active) return;
@@ -1248,9 +1112,7 @@ function loopAutoFarm() {
     S.AutoFarm.angle = angleTo(best, p);
     if (S.AutoFarm.angle) { CL.WQU(S.AutoFarm.angle); CL.WQT(); }
     moveTowards(p, best, 50);
-  } else {
-    moveTowards(p, { x: S.AutoFarm.SX, y: S.AutoFarm.SY }, 30);
-  }
+  } else moveTowards(p, { x: S.AutoFarm.SX, y: S.AutoFarm.SY }, 30);
 }
 function loopAutoTame() {
   if (!S.AutoTame.active) return;
@@ -1274,7 +1136,6 @@ function loopAutoFurnace() {
 }
 function loopAutoSeed() {
   if (!S.AutoSeed.active || UD.WUZ.WVA) return;
-  const p = me(); if (!p) return;
   const seed = firstInv([ITEM.WHEAT_SEED, ITEM.PUMPKIN_SEED, ITEM.CARROT_SEED, ITEM.TOMATO_SEED]);
   if (seed < 0) return;
   for (let i = 0; i < 26; i++) wsSend([pkt.build, seed, i * 10, 1]);
@@ -1290,12 +1151,11 @@ function loopAutoBook() {
   if (p.right !== ITEM.BOOK && inv(ITEM.BOOK)) equip(ITEM.BOOK);
 }
 function loopZmaCrown() {
-  if (!S.ZmaAutoCrown || !wsReady || !wsOrig.url.includes("community")) return;
+  if (!S.ZmaAutoCrown || !wsReady) return;
   const p = me(); if (!p) return;
   const secs = 5 - (Date.now() - lastGaugeT) / 1000;
   if (Math.floor(UD.WSJ.WUN * 100) !== 100 && inv(ITEM.CROWN_GREEN) && p[WD.clothe] !== ITEM.CROWN_GREEN && secs <= .3) equip(ITEM.CROWN_GREEN);
 }
-let lastGaugeT = Date.now();
 function loopZmaBottle() {
   if (!S.ZmaAutoBottle.enabled || !wsReady) return;
   if (Math.floor(UD.WSJ.WUN * 100) <= Number(S.ZmaAutoBottle.health) && inv(ITEM.BOTTLE_FULL)) equip(ITEM.BOTTLE_FULL);
@@ -1303,9 +1163,8 @@ function loopZmaBottle() {
 function loopZmaRedGold() {
   if (!S.ZmaRedGold.active || !wsReady) return;
   const p = me(); if (!p) return;
-  for (const c of (WD.units[E.CHEST] || [])) if (dist(p, c) < 150 && (isAlly(c[WD.pid]) || !c.lock)) {
+  for (const c of (WD.units[E.CHEST] || [])) if (dist(p, c) < 150 && (isAlly(c[WD.pid]) || !c.lock))
     for (const it of [ITEM.REIDITE, ITEM.GOLD]) if (inv(it)) { c[MS.iid] = c.id; CL.WSW(c, it, 255); }
-  }
 }
 function loopPathfinder() {
   if (!S.PathFinder.active) return;
@@ -1313,15 +1172,10 @@ function loopPathfinder() {
   window.findpath({ x: Math.round(p.x/100), y: Math.round(p.y/100) }, S.PathFinder.End);
   if (dist(p, { x: S.PathFinder.End.x*100, y: S.PathFinder.End.y*100 }) < 1000 && window.lastChosenKit !== -1 && S.PathFinder.lastKit && window.chooseKit) window.chooseKit(window.lastChosenKit);
 }
-function loopAutoRespawn() {
-  if (!S.AutoRespawn.active || !wsReady) return;
-  const p = me();
-  if (!p) { try { CL.WTL && CL.WTL(); } catch (e) {} }
-}
 function loopAutoLand() {
   if (!S.AutoLand.active) return;
-  const p = me(); if (!p) return;
-  if (!p[WD.fly] && WD.flyableEquiped !== undefined && p[WD.vehicle] === WD.flyableEquiped && p[WD.speed] < 50) equip(WD.flyableEquiped);
+  const p = me(); if (!p || WD.flyableEquiped === undefined) return;
+  if (!p[WD.fly] && p[WD.vehicle] === WD.flyableEquiped && p[WD.speed] < 50) equip(WD.flyableEquiped);
 }
 function loopAutoDiving() {
   if (!S.AutoDiving.active) return;
@@ -1338,7 +1192,6 @@ function loopAutoHat() {
 }
 function loopSmartCraft() {
   if (!S.SmartCraft.active || UD.WUZ.WVA) return;
-  const p = me(); if (!p) return;
   const chains = {
     "Gold Spikes": [ITEM.WALL,ITEM.STONE_WALL,ITEM.GOLD_WALL,ITEM.GOLD_SPIKE],
     "Diamond Spikes": [ITEM.WALL,ITEM.STONE_WALL,ITEM.GOLD_WALL,ITEM.DIAMOND_WALL,ITEM.DIAMOND_SPIKE],
@@ -1359,46 +1212,97 @@ function loopSmartCraft() {
   for (let i = 0; i < chain.length - 1; i++) if (inv(chain[i])) step = i + 1;
   CL.WQI(chain[step], 1);
 }
-function convert(res, need, item) {
-  let have = S.market[res];
-  const n = Math.floor(have / need);
-  if (n > 0) { for (let i = 0; i < n; i++) CL.WQN({ val: need, id: item }); }
-  S.market[res] = have % need;
-}
-function backToLobby() { try { if (wsOrig) wsOrig.close(); CL.WSG && CL.WSG(); } catch (e) {} }
 
-function wsSend(a) { try { if (wsOrig && wsOrig.readyState === 1) wsOrig.send(JSON.stringify(a)); } catch (e) {} }
-
-/* --------------------------------------------------------- glowne petle */
-function mainLoop(t) {
-  const dt = Math.min((t - lastFrameT) / 1000, 1);
-  lastFrameT = t;
-  if (Date.now() - lastFpsT > 1000) { lastFpsT = Date.now(); fpsText = Math.round(1 / (dt || 1)) + " FPS"; }
-  if (wsReady) { try { drawOverlay(); } catch (e) {} }
-  requestAnimationFrame(mainLoop);
-}
 const loops = [loopAimbot, loopAutoSpike, loopAutoWall, loopAutoFire, loopAutoBuild, loopAutoSteal, loopAutoExt,
   loopAutoBread, loopAutoTotem, loopAutoCrown, loopAutoEmerald, loopAutoFarm, loopAutoTame, loopAutoUnlock,
   loopAutoFurnace, loopAutoSeed, loopAutoIce, loopAutoBook, loopZmaCrown, loopZmaBottle, loopZmaRedGold,
   loopPathfinder, loopAutoLand, loopAutoDiving, loopAutoHat, loopSmartCraft];
 
-/* ====================================================== BINDY KLAWISZY */
-function hookKeys() {
-  const down = {};
-  document.addEventListener("keydown", e => {
-    if (e.code === S.Hidden.bind) { S.Hidden.active = !S.Hidden.active; applyMenuOpacity(); const g = $(xor("voidGui")); if (g) g.style.display = S.Hidden.active ? "none" : "flex"; return; }
-    down[e.code] = 1;
-    for (const k in S) {
-      const f = S[k];
-      if (f && f.bind === e.code && "active" in f) { f.active = !f.active; save(); }
+/* -------------------------------------------------- rysowanie overlay */
+function drawOverlay() {
+  if (!ctx || !wsReady) return;
+  const p = me(); if (!p || !UD.WUY) return;
+  const cam = { x: UD.WUF.x, y: UD.WUF.y };
+
+  for (const u of (WD.units[E.PLAYERS] || [])) {
+    const pid = u[WD.pid];
+    if (S.playerTracers && pid !== USER.id) {
+      ctx.save(); ctx.strokeStyle = isAlly(pid) ? "#66ff00" : "#ff2e2e"; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(cam.x + p.x, cam.y + p.y); ctx.lineTo(cam.x + u.x, cam.y + u.y); ctx.stroke(); ctx.restore();
     }
-    if (e.code === S.Spectator.bind) { S.spectator = !S.spectator; }
-    if (e.code === S.DropSword.bind) { const p = me(); if (p && weaponKind(p.right)) CL.WQS(p.right); }
-  });
-  document.addEventListener("keyup", e => { down[e.code] = 0; });
+    if (S.movementPredictor && u.r && (u.x !== u.r.x || u.y !== u.r.y)) {
+      ctx.save(); ctx.strokeStyle = "#ff2e2e"; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(cam.x + u.x, cam.y + u.y); ctx.lineTo(cam.x + u.r.x, cam.y + u.r.y); ctx.stroke(); ctx.restore();
+    }
+  }
+
+  const tr = [["Krakens",E.KRAKEN,"#000"],["Sandworms",E.SAND_WORM,"#000"],["BabyDragons",E.BABY_DRAGON,"#949494"],
+    ["BabyLavaDragons",E.BABY_LAVA,"#660000"],["BabyMammoths",E.BABY_MAMMOTH,"#949494"],["Bears",E.BEAR,"#949494"],
+    ["Boars",E.BOAR,"#007512"],["Crabs",E.CRAB,"#948f00"],["Dragons",E.DRAGON,"#949494"],["FireMobs",E.FLAME,"#660000"],
+    ["Foxes",E.FOX,"#949494"],["Hawks",E.HAWK,"#007512"],["KingCrabs",E.CRAB_BOSS,"#948f00"],
+    ["LavaDragons",E.LAVA_DRAGON,"#660000"],["Mammoths",E.MAMMOTH,"#949494"],["Penguins",E.PENGUIN,"#949494"],
+    ["Piranhas",E.PIRANHA,"#000c78"],["Rabbits",E.RABBIT,"#007512"],["Spiders",E.SPIDER,"#007512"],
+    ["Vultures",E.VULTURE,"#948f00"],["Wolfs",E.WOLF,"#007512"],["Crocodiles",E.CROCODILE,"#003c12"],
+    ["GoldenChickens",E.GOLDEN_CHICKEN,"#007512"],["GoldenHens",E.GOLDEN_HEN,"#007512"],
+    ["Ocelots",E.OCELOT,"#003c12"],["Parrots",E.PARROT,"#003c12"]];
+  for (const [key, type, col] of tr) {
+    if (!S.Tracers[key]) continue;
+    for (const u of (WD.units[type] || [])) {
+      ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(cam.x + p.x, cam.y + p.y); ctx.lineTo(cam.x + u.x, cam.y + u.y); ctx.stroke(); ctx.restore();
+    }
+  }
+
+  const H = UD.WUY.translate;
+  let y = H.y - 50;
+  const line = (txt, color) => { ctx.save(); ctx.font = "30px Baloo Paaji"; ctx.lineWidth = 7; ctx.strokeStyle = "black"; ctx.fillStyle = color || "#fff"; ctx.strokeText(txt, H.x - 120, y); ctx.fillText(txt, H.x - 120, y); ctx.restore(); y += 30; };
+  if (S.fpsDisplay) line(fpsText);
+  if (S.pingDisplay && pingText) line(pingText + "ms");
+  if (S.daysAlive) line(UD.WVF + " Day" + (UD.WVF > 1 ? "s" : ""));
+  if (S.timePlayed.active) line(fmtTime(Math.round((Date.now() - S.timePlayed.start) / 1000)));
+
+  if (S.listEnabledHacks.mode !== "Off") {
+    let ly = S.listEnabledHacks.mode === "Bottom Left" ? innerHeight - 25 : 25;
+    ctx.save(); ctx.font = "18px Baloo Paaji"; ctx.strokeStyle = "black"; ctx.lineWidth = 7; ctx.fillStyle = "#fff";
+    for (const k in S) if (S[k] && S[k].active && S[k].bind && S[k].bind !== "NONE") { ctx.strokeText(k, 15, ly); ctx.fillText(k, 15, ly); ly += S.listEnabledHacks.mode === "Bottom Left" ? -20 : 20; }
+    ctx.restore();
+  }
 }
 
-/* ====================================================== START GRY */
+/* ----------------------------------------------------- main loop / bindy */
+const keys = {};
+function mainLoop(t) {
+  const dt = Math.min((t - lastFrameT) / 1000, 1);
+  lastFrameT = t;
+  if (Date.now() - lastFpsT > 1000) { lastFpsT = Date.now(); fpsText = Math.round(1 / (dt || 1)) + " FPS"; }
+  if (S.Spectator.active && UD.WUF) {
+    const sp = Number(S.Spectator.speed);
+    if (keys.KeyS || keys.ArrowDown) UD.WUF.y -= sp;
+    if (keys.KeyW || keys.ArrowUp) UD.WUF.y += sp;
+    if (keys.KeyD || keys.ArrowRight) UD.WUF.x -= sp;
+    if (keys.KeyA || keys.ArrowLeft) UD.WUF.x += sp;
+  }
+  requestAnimationFrame(mainLoop);
+}
+function inInput() { const a = document.activeElement; return a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA"); }
+const HOLD = ["AutoSpike","AutoWall","AutoFire","AutoCrown","AutoSteal","ZmaRedGold"];
+function hookKeys() {
+  document.addEventListener("keydown", e => {
+    keys[e.code] = 1;
+    if (e.code === S.Hidden.bind) { S.Hidden.active = !S.Hidden.active; applyMenuOpacity(); const g = $(xor("voidGui")); if (g) g.style.display = S.Hidden.active ? "none" : "flex"; return; }
+    if (inInput()) return;
+    for (const k in S) { const f = S[k]; if (f && f.bind === e.code && "active" in f && HOLD.indexOf(k) === -1) f.active = !f.active; }
+    if (e.code === S.Spectator.bind) S.Spectator.active = !S.Spectator.active;
+    if (e.code === S.DropSword.bind) { const p = me(); if (p && weaponKind(p.right)) CL.WQS(p.right); }
+    save();
+  });
+  document.addEventListener("keyup", e => {
+    keys[e.code] = 0;
+    for (const k of HOLD) { const f = S[k]; if (f && f.bind === e.code) f.active = false; }
+  });
+}
+
+/* ====================================================== START */
 function patchSource(src) {
   return src.replace(/(<\s*|>\s*)(?:0[xX][fF]{4}|65535)(\s*>|\s*)|(\s*)(?:0[xX][fF]{4}|65535)(\s*)(?=>|<)/g,
     m => m.replace(/(?:0[xX][fF]{4}|65535)/, "0"));
@@ -1406,50 +1310,37 @@ function patchSource(src) {
 
 async function boot() {
   hookTimeout();
-  reloadTextures();
+  log("uruchamiam gre (" + Math.round(GAME_SRC.length / 1024) + " KB)...");
+  try { Function(patchSource(GAME_SRC))(); }
+  catch (e) { warn("blad uruchomienia gry:", e); }
 
-  /* interwał probujacy zainstalowac hooki */
+  setInterval(() => { const p = $("exapush-popup"); if (p) { p.style.opacity = 0; p.remove(); } }, 2500);
+
   const poll = setInterval(() => {
-    if (installed || !pickObjects()) return;
-    if (!window.js_beautify) return;
+    if (installed) return;
+    if (!pickObjects()) return;
+    if (typeof window.js_beautify !== "function") return;
     installed = true;
     try {
       mapAll();
-      hookWebSocket();
-      hookDrawGame();
-      canvasEl = $("game_canvas");
-      ctx = canvasEl && canvasEl.getContext("2d");
-      hookDrawImage();
-      hookKeys();
-      /* nadpisz drawImage aby Xray dzialal (na wlasciwym kontekscie gry) */
-      if (ctx && !ctx.__voidAlpha) {
-        const o = ctx.drawImage;
-        ctx.drawImage = function (...a) { if (S.Xray.active && wsReady) ctx.globalAlpha = S.Xray.opacity; return o.apply(this, a); };
-        ctx.__voidAlpha = true;
-      }
-      gui = new Gui(guiConfig);
-      gui.build();
+      hookWebSocket(); hookSpawn(); hookGauges(); hookTime(); hookPing();
+      hookCanvas(); hookDrawGame(); hookKeys();
+      gui = new Gui(guiConfig); gui.build();
       for (const l of loops) setInterval(l, 60);
       requestAnimationFrame(mainLoop);
       setInterval(() => { if (wsReady) { try { CL.WSG && CL.WSG(); } catch (e) {} } }, 2000);
+      applyBrightness(); applyMenuOpacity();
+      window.__VOID = { S, CL, GD, WD, UD, MS };
       log("ZAINSTALOWANO — hack aktywny", "lime");
       clearInterval(poll);
     } catch (e) { warn("instalacja:", e); }
   }, 100);
-
-  /* uruchom gre */
-  log("uruchamiam gre...");
-  try { Function(patchSource(GAME_SRC))(); }
-  catch (e) { warn("blad uruchomienia gry:", e); }
-
-  /* sprzatanie reklam */
-  setInterval(() => { const p = $("exapush-popup"); if (p) { p.style.opacity = 0; p.remove(); } }, 2500);
 }
 
 /* restore ustawien */
 try {
   const gs = localStorage.getItem("guiSettings");
-  if (gs) { const a = JSON.parse(gs); ["align","toggleGuiKey","toggleGuiButton","draggable","fontSize","opacity","width","height"].forEach((k,i)=>guiConfig[k]=a[i]); }
+  if (gs) { const a = JSON.parse(gs); ["align","toggleGuiKey","toggleGuiButton","draggable","fontSize","opacity","width","height"].forEach((k, i) => { if (a[i] !== undefined) guiConfig[k] = a[i]; }); }
   const st = localStorage.getItem("settings_all");
   if (st) JSON.parse(st).forEach(([p, v]) => setPath(p, v));
 } catch (e) {}

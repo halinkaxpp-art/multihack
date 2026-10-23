@@ -1,13 +1,13 @@
 /* ============================================================================
-   Void V7 Reborn — loader.js (v7.4, pełny plik)
+   Void V7 Reborn — loader.js (v8.0 FINAL)  —  pełny plik
    ============================================================================ */
 (async function () {
 "use strict";
 
-const log  = (m, c) => console.log("%c[Void] " + m, "color:" + (c || "cyan") + ";font-weight:bold");
-const $    = (id) => document.getElementById(id);
-const xor  = (s) => Array.from(s).map(c => String.fromCharCode(c.charCodeAt(0) ^ 1410065407)).join("");
-const F    = function () {};
+const log = (m, c) => console.log("%c[Void] " + m, "color:" + (c || "cyan") + ";font-weight:bold");
+const $ = (id) => document.getElementById(id);
+const xor = (s) => Array.from(s).map(c => String.fromCharCode(c.charCodeAt(0) ^ 1410065407)).join("");
+const F = function () {};
 window.addEventListener("error", e => log("BLAD: " + e.message + " @ " + e.filename + ":" + e.lineno));
 window.addEventListener("unhandledrejection", e => log("BLAD PROMISE: " + ((e.reason && (e.reason.stack || e.reason)) || e.reason)));
 
@@ -59,7 +59,7 @@ const ITEM = {}; let __ii = 0;
  "PITCHFORK PITCHFORK2 SADDLE DIVING_MASK SUPER_DIVING_SUIT NIMBUS WITCH LOCKPICK REIDITE WATERING_CAN_FULL")
   .split(" ").forEach(n => { if (n) ITEM[n] = __ii++; });
 
-/* ============================== 1. bundle gry ============================== */
+/* ============================== 1. bundle ============================== */
 let GAME_URL = null;
 for (const s of document.querySelectorAll("script[src]")) {
   const src = s.src;
@@ -76,100 +76,70 @@ const GAME_SRC = await new Promise((res, rej) => {
 });
 log("pobrano " + Math.round(GAME_SRC.length / 1024) + " KB");
 
-/* ============================== 2. props (AST) ============================== */
+/* ============================== 2. props ============================== */
 const VERSION = (GAME_URL.match(/v=(\d+)/) || [])[1] || "0";
 const idb = () => new Promise((res, rej) => {
   const r = indexedDB.open("crackSunrise", 1);
   r.onupgradeneeded = (ev) => { const db = ev.target.result; if (!db.objectStoreNames.contains("data")) db.createObjectStore("data"); };
-  r.onsuccess = (ev) => res((ev.target || r).result);
-  r.onerror = () => rej(r.error);
+  r.onsuccess = (ev) => res((ev.target || r).result); r.onerror = () => rej(r.error);
 });
 const idbGet = async (k) => { const db = await idb(); return new Promise(res => { const q = db.transaction("data","readonly").objectStore("data").get(k); q.onsuccess = (ev) => res((ev.target || q).result); }); };
 const idbPut = async (k, v) => { const db = await idb(); return new Promise(res => { const q = db.transaction("data","readwrite").objectStore("data").put(v, k); q.onsuccess = () => res(); }); };
 const objKeys = (o) => (o && o.properties ? o.properties.map(p => p.key && (p.key.name !== undefined ? p.key.name : p.key.value)) : []);
 const objVals = (o) => (o && o.properties ? o.properties.map(p => p.value && p.value.value) : []);
-
 function detectProps(ast) {
   const out = ["", "", "", "", ""];
   (function walk(n) {
     if (!n || typeof n !== "object") return;
-    if (!out[0] && n.type === "SequenceExpression") {
-      let cur = null, other = null;
-      for (const e of n.expressions) {
-        if (e.type === "AssignmentExpression" && e.right && e.right.value === "url('img/cursor1.png'), pointer") cur = e;
-        else if (e.type === "AssignmentExpression" && e.left && e.left.property && e.left.property.name) other = e;
-      }
-      if (cur && other) out[0] = other.left.property.name;
-    }
+    if (!out[0] && n.type === "SequenceExpression") { let cur = null, other = null;
+      for (const e of n.expressions) { if (e.type === "AssignmentExpression" && e.right && e.right.value === "url('img/cursor1.png'), pointer") cur = e; else if (e.type === "AssignmentExpression" && e.left && e.left.property && e.left.property.name) other = e; }
+      if (cur && other) out[0] = other.left.property.name; }
     if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name && n.right) {
       const nm = n.left.property.name, r = n.right;
       if (!out[1] && r.type === "ArrayExpression" && r.elements.length === 9 && r.elements.every(e => e && e.type === "ArrayExpression")) out[1] = nm;
-      if (!out[3]) {
-        if (r.type === "UnaryExpression" && r.operator === "~" && r.argument && Math.abs((r.argument.value || 0) - 1e6) < 1) out[3] = nm;
-        else if (r.type === "Literal" && (r.value === 1000000 || r.value === -1000001 || r.value === -1e6)) out[3] = nm;
-      }
-      if (r.type === "ObjectExpression") {
-        const ks = objKeys(r), vs = objVals(r);
+      if (!out[3]) { if (r.type === "UnaryExpression" && r.operator === "~" && r.argument && Math.abs((r.argument.value || 0) - 1e6) < 1) out[3] = nm; else if (r.type === "Literal" && (r.value === 1000000 || r.value === -1000001)) out[3] = nm; }
+      if (r.type === "ObjectExpression") { const ks = objKeys(r), vs = objVals(r);
         if (!out[2] && (ks.includes("commandInput") || vs.includes("commandInput"))) out[2] = nm;
-        if (!out[4] && (ks.includes("serverAddressBlock") || vs.includes("serverAddressBlock"))) out[4] = nm;
-      }
+        if (!out[4] && (ks.includes("serverAddressBlock") || vs.includes("serverAddressBlock"))) out[4] = nm; }
     }
     for (const k in n) { const v = n[k]; if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") walk(v); }
   })(ast);
   return out;
 }
-function extraCandidates(ast) {
-  const set = new Set();
-  (function walk(n) {
-    if (!n || typeof n !== "object") return;
-    if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name && n.right && n.right.type === "ObjectExpression" && n.right.properties.length >= 3 && n.left.property.name.length <= 6) set.add(n.left.property.name);
-    for (const k in n) { const v = n[k]; if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") walk(v); }
-  })(ast);
-  return [...set];
-}
+function extraCandidates(ast) { const set = new Set(); (function walk(n) { if (!n || typeof n !== "object") return; if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name && n.right && n.right.type === "ObjectExpression" && n.right.properties.length >= 3 && n.left.property.name.length <= 6) set.add(n.left.property.name); for (const k in n) { const v = n[k]; if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") walk(v); } })(ast); return [...set]; }
 const parse = (code) => { try { return window.acorn.parse(code, { ecmaVersion: 2022 }); } catch (e) { log("parse err: " + e.message); return null; } };
-
 const PROPS_KEY = "propsV3_" + VERSION;
 let PROPS = null;
 async function getProps() {
-  let cached = null;
-  try { cached = await idbGet(PROPS_KEY); } catch (e) {}
+  let cached = null; try { cached = await idbGet(PROPS_KEY); } catch (e) {}
   if (cached && cached.filter(Boolean).length >= 5 && !window.__VOID_REDETECT) { log("props z cache v3: " + JSON.stringify(cached)); return cached; }
   log("wykrywam propsy (surowy kod)...");
-  const rawAst = parse(GAME_SRC);
-  if (rawAst) PROPS = detectProps(rawAst);
-  if (!PROPS || PROPS.filter(Boolean).length < 5) {
-    log("probuje na zminifikowanym (Terser)...");
-    try { const m = await window.Terser.minify(GAME_SRC, { compress: { passes: 1 }, mangle: false }); const minAst = parse(m.code); if (minAst) { const p2 = detectProps(minAst); PROPS = PROPS ? PROPS.map((v, i) => v || p2[i]) : p2; } } catch (e) { log("terser err: " + e.message); }
-  }
+  const rawAst = parse(GAME_SRC); if (rawAst) PROPS = detectProps(rawAst);
+  if (!PROPS || PROPS.filter(Boolean).length < 5) { log("probuje Terser..."); try { const m = await window.Terser.minify(GAME_SRC, { compress: { passes: 1 }, mangle: false }); const minAst = parse(m.code); if (minAst) { const p2 = detectProps(minAst); PROPS = PROPS ? PROPS.map((v, i) => v || p2[i]) : p2; } } catch (e) { log("terser err: " + e.message); } }
   if (!PROPS) PROPS = ["", "", "", "", ""];
   log("props wykryte: " + JSON.stringify(PROPS));
-  const empty = PROPS.map((v, i) => v ? null : i).filter(v => v !== null);
-  if (empty.length) log("!!! PUSTE PROPSY idx: " + empty.join(","), "orange");
   try { await idbPut(PROPS_KEY, PROPS); } catch (e) {}
   return PROPS;
 }
 PROPS = await getProps();
 const HOOK = [...new Set(PROPS.filter(Boolean))];
-if (HOOK.length < 5) { const ast = parse(GAME_SRC); const extra = ast ? extraCandidates(ast) : []; for (const n of extra) { if (HOOK.length >= 60) break; if (!HOOK.includes(n)) HOOK.push(n); } log("hookuje dodatkowe kandydaty (" + (HOOK.length - PROPS.filter(Boolean).length) + ")"); }
-if (!HOOK.length) { log("brak propsow do hookowania", "red"); return; }
+if (HOOK.length < 5) { const ast = parse(GAME_SRC); const extra = ast ? extraCandidates(ast) : []; for (const n of extra) { if (HOOK.length >= 60) break; if (!HOOK.includes(n)) HOOK.push(n); } }
+if (!HOOK.length) { log("brak propsow", "red"); return; }
 
 /* ============================== 3. hook prototypu ============================== */
 window.__VOID_CAP = window.__VOID_CAP || [];
 const captured = window.__VOID_CAP;
-(function hookPrototype() {
+(function () {
   const slot = "\u200b";
   for (const p of HOOK) { if (!p) continue; try { Object.defineProperty(Object.prototype, p, { configurable: true, get() { return this[slot + p]; }, set(v) { this[slot + p] = v; if (v && typeof v === "object" && captured.length < 8000 && !captured.includes(this)) captured.push(this); } }); } catch (e) {} }
-  const _keys = Object.keys;
-  Object.keys = (o) => (o === null || o === undefined) ? [] : _keys(o);
-  Object.keys.toString = () => "function keys() { [native code] }";
+  const _keys = Object.keys; Object.keys = (o) => (o === null || o === undefined) ? [] : _keys(o); Object.keys.toString = () => "function keys() { [native code] }";
 })();
 
 /* ============================== 4. store + mapowanie ============================== */
 const CL = {}, GD = {}, UI = {}, WD = {}, UD = {}, MS = {};
 Object.defineProperties(window, { v2600:{get:()=>CL}, v2601:{get:()=>GD}, v2602:{get:()=>UI}, v2603:{get:()=>WD}, v2604:{get:()=>UD}, v2605:{get:()=>MS} });
 let CLIENT=null, WORLD=null, USER=null, GAME=null, OPTS=null;
-let installed = false, wsReady = false, mapW = 0, mapH = 0, pingSent = 0, pingText = 0, lastGaugeT = Date.now();
+let installed=false, wsReady=false, mapW=0, mapH=0, pingSent=0, pingText=0, lastGaugeT=Date.now();
 
 const assigned = [], assignLog = [];
 const strings = s => { const o = []; let m; const r = /["']([^"']*)["']/g; while ((m = r.exec(s))) o.push(m[1]); return o; };
@@ -182,11 +152,9 @@ const sim = (a,b) => { const x = counts(a), y = counts(b); const n = (x.s===y.s)
 const lines = s => { try { return window.js_beautify(s).split("\n").length; } catch (e) { return s.split("\n").length; } };
 const def = (dst, name, src, key) => Object.defineProperty(dst, name, { configurable:true, get(){ return src[key]; }, set(v){ src[key] = v; } });
 
-/* ====== NAPRAWIONE mapowanie (bug: puste spec[] blokowalo WSZYSTKIE funkcje) ====== */
 function assign(prefix, src, dst, name, type, spec, fnLen, callCnt, lineCnt, mustInc, refSrc, pick) {
   if (dst[name] !== undefined) { assigned.push(prefix + name); return; }
-  let hit = 0;
-  const keys = Object.keys(src);
+  let hit = 0; const keys = Object.keys(src);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i], val = src[key];
     if (assigned.includes(prefix + key)) continue;
@@ -200,15 +168,10 @@ function assign(prefix, src, dst, name, type, spec, fnLen, callCnt, lineCnt, mus
       const callOk= callCnt === "any" || callCnt === undefined || countCalls(raw) === callCnt;
       const simOk = !refSrc || sim(refSrc, raw) >= 100;
       if (kwOk && incOk && fnOk && callOk && simOk) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
-    } else if (Array.isArray(type) && Array.isArray(val)) {
-      if (lenOf(val) === spec || spec === "any") { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
-    } else if (type && typeof type === "object" && !Array.isArray(type) && val && typeof val === "object" && !Array.isArray(val)) {
-      if (shape(val, type) && (lenOf(val) === spec || spec === "any")) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
-    } else if (typeof type === "boolean" && typeof val === "boolean" && val === type) {
-      if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return;
-    } else if (typeof type === "number" && typeof val === "number" && val === type && val === spec) {
-      if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return;
-    }
+    } else if (Array.isArray(type) && Array.isArray(val)) { if (lenOf(val) === spec || spec === "any") { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; } }
+    else if (type && typeof type === "object" && !Array.isArray(type) && val && typeof val === "object" && !Array.isArray(val)) { if (shape(val, type) && (lenOf(val) === spec || spec === "any")) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; } }
+    else if (typeof type === "boolean" && typeof val === "boolean" && val === type) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
+    else if (typeof type === "number" && typeof val === "number" && val === type && val === spec) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
   }
 }
 function assignIdx(prefix, src, dst, name, index) { if (dst[name] !== undefined) return; let i = 0; for (const key in src) { if (i === index) { def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, index]); return; } i++; } }
@@ -222,7 +185,6 @@ function pickObjects() {
   if (!OPTS)   OPTS   = captured.find(o => o && o.options);
   return !!(CLIENT && WORLD && GAME);
 }
-
 function mapAll() {
   assignIdx("client", CLIENT, CL, "websocket", 0);
   assign("client", CLIENT, CL, "WRZ", F, [], 0, 3, "any", "waiting");
@@ -254,27 +216,18 @@ function mapAll() {
   assign("client", CLIENT, CL, "WQV", F, [], 1, 0, 4, "stringify"); assign("client", CLIENT, CL, "WQW", F, [], 1, 0, 3, "stringify");
   assignIdx("client", CLIENT, CL, "WQX", (idx("client","WQW") || 0) + 2);
   assign("client", CLIENT, CL, "WQY", F, [], 0, 2, 7, "none"); assign("client", CLIENT, CL, "WQZ", F, ["adsRefresh"], 2, 3, 17, "none");
-  assignIdx("client", CLIENT, CL, "WTA", (idx("client","WQZ") || 0) + 1);
-  assignIdx("client", CLIENT, CL, "WTB", (idx("client","WTA") || 0) + 3);
+  assignIdx("client", CLIENT, CL, "WTA", (idx("client","WQZ") || 0) + 1); assignIdx("client", CLIENT, CL, "WTB", (idx("client","WTA") || 0) + 3);
   assign("client", CLIENT, CL, "WTC", F, [], 0, 1, 4, "none"); assign("client", CLIENT, CL, "WTD", F, [], 1, 1, 8, "++");
-
   assign("game", GAME, GD, "WTE", F, [], 0, 29, "any", "options.button");
-  assign("game", GAME, GD, "WSJ", { translate:{x:0,y:0}, y:0 }, 4);
-  assign("game", GAME, GD, "WTF", [], 359);
+  assign("game", GAME, GD, "WSJ", { translate:{x:0,y:0}, y:0 }, 4); assign("game", GAME, GD, "WTF", [], 359);
   assign("game", GAME, GD, "WTG", F, ["team_box","shop_starterkit","home_craft","recipe_craft","option_in_game","sure_delete","cancel_sure_delete","chronoquest"], 1, 6);
-  assign("game", GAME, GD, "drawGame", F, [], 0, 1, "any", "none");
-  assign("game", GAME, GD, "WTI", { translate:{x:0,y:0}, focus:F }, 4);
+  assign("game", GAME, GD, "drawGame", F, [], 0, 1, "any", "none"); assign("game", GAME, GD, "WTI", { translate:{x:0,y:0}, focus:F }, 4);
   assign("game", GAME, GD, "WTJ", { open:false, select:F, items:[] }, 10);
-
-  assign("ui", OPTS, UI, "WTK", F, [], 0, 2, 14, "check_ads");
-  assign("ui", OPTS, UI, "WTL", F, ["token?id="], 2, 4, "any", "none");
+  assign("ui", OPTS, UI, "WTK", F, [], 0, 2, 14, "check_ads"); assign("ui", OPTS, UI, "WTL", F, ["token?id="], 2, 4, "any", "none");
   assign("ui", OPTS, UI, "WTM", { id:"any", style:"any", input:"any", active:0, position:0, view:0, translate:{x:0,y:0} }, 7);
-
   assign("world", WORLD, WD, "WTN", [], "any"); assign("world", WORLD, WD, "units", [], "any"); assign("world", WORLD, WD, "fast_units", [], "any");
   assign("world", WORLD, WD, "WTP", F, ["any"], 1, 11, "any", "none");
-  assignIdx("world", WORLD, WD, "WTR", (idx("world","WTP") || 0) + 3);
-  assignIdx("world", WORLD, WD, "WTS", (idx("world","WTR") || 0) + 1);
-
+  assignIdx("world", WORLD, WD, "WTR", (idx("world","WTP") || 0) + 3); assignIdx("world", WORLD, WD, "WTS", (idx("world","WTR") || 0) + 1);
   assign("user", USER, UD, "WSO", {}, 3); assign("user", USER, UD, "WTQ", {}, 3); assign("user", USER, UD, "WTT", {}, 5);
   assign("user", USER, UD, "WTU", {}, 7); assign("user", USER, UD, "WTV", {}, 6); assign("user", USER, UD, "WTW", {}, 2);
   assign("user", USER, UD, "WTX", {}, 4); assign("user", USER, UD, "WQK", {}, 5);
@@ -290,24 +243,22 @@ function mapAll() {
   assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUM", 0); assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUN", 1);
   assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUO", 2); assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUP", 3);
   assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUR", 4); assignIdx("userGauges", USER.WSJ, USER.WSJ, "WUS", 5);
-  assign("user", USER, UD, "WUQ", { translate:{x:0,y:0}, sort:F }, 7);
-  assign("ldb", USER.WUQ, USER.WUQ, "WUT", [], 0);
+  assign("user", USER, UD, "WUQ", { translate:{x:0,y:0}, sort:F }, 7); assign("ldb", USER.WUQ, USER.WUQ, "WUT", [], 0);
   assign("user", USER, UD, "WUU", {}, 11);
   assignIdx("userInv", USER.WUU, USER.WUU, "WUV", 3); assignIdx("userInv", USER.WUU, USER.WUU, "WUW", 4); assignIdx("userInv", USER.WUU, USER.WUU, "WUX", 8);
-  assign("user", USER, UD, "WUY", { enabled:false, translate:{x:0,y:0} }, 5);
-  assign("user", USER, UD, "WUZ", {}, 18);
+  assign("user", USER, UD, "WUY", { enabled:false, translate:{x:0,y:0} }, 5); assign("user", USER, UD, "WUZ", {}, 18);
   assignIdx("userCraft", USER.WUZ, USER.WUZ, "WVA", 3); assignIdx("userCraft", USER.WUZ, USER.WUZ, "WVB", 4); assignIdx("userCraft", USER.WUZ, USER.WUZ, "WUP", 10);
   assign("user", USER, UD, "WVC", { add:F }, 5, "any", "any", "none"); assignIdx("userDesert", USER.WVC, USER.WVC, "WVD", 1);
   assign("user", USER, UD, "WVE", { add:F }, 5, "any", "any", "none"); assignIdx("userWinter", USER.WVE, USER.WVE, "WVD", 1);
-  assign("user", USER, UD, "WVF", 0, 0, "any", "any", "any", "any", "any", 4);
-  assign("user", USER, UD, "WVG", false, false, "any", "any", "any", "any", "any", 2);
+  assign("user", USER, UD, "WVF", 0, 0, "any", "any", "any", "any", "any", 4); assign("user", USER, UD, "WVG", false, false, "any", "any", "any", "any", "any", 2);
   try { for (const k in USER) { if (USER[k] === -1) { MS.iid = k; break; } } } catch (e) {}
   log("zmapowano: client=" + Object.keys(CL).length + " game=" + Object.keys(GD).length + " ui=" + Object.keys(UI).length + " world=" + Object.keys(WD).length + " user=" + Object.keys(UD).length);
 }
 
-/* ============================== 5. hooki sieci ============================== */
+/* ============================== 5. hooki ============================== */
 let wsOrig = null, sendFn = null, onopenFn = null;
 const spamStore = {}; const pkt = { camera: null, build: null };
+const down = {};
 function hookWebSocket() {
   if (!CL.websocket || wsOrig === CL.websocket) return;
   if (wsOrig) { try { wsOrig.close(); } catch (e) {} }
@@ -331,16 +282,18 @@ function hookSpawn() { if (typeof CL.WTB !== "function" || CL.__spawnHooked) ret
 function hookGauges() { if (typeof CL.WSJ !== "function" || CL.__gaugeHooked) return; const orig = CL.WSJ; CL.WSJ = function () { lastGaugeT = Date.now(); return orig.apply(this, arguments); }; CL.__gaugeHooked = true; }
 function hookTime() { if (typeof CL.WSK !== "function" || CL.__timeHooked) return; const orig = CL.WSK; CL.WSK = function (d) { WD.time = d; return orig.apply(this, arguments); }; CL.__timeHooked = true; }
 function hookPing() { if (typeof CL.WSG !== "function" || CL.__pingHooked) return; const os = CL.WSG, oh = CL.WSH; CL.WSG = function () { pingSent = Date.now(); return os.apply(this, arguments); }; CL.WSH = function () { if (pingSent) pingText = Date.now() - pingSent; return oh.apply(this, arguments); }; CL.__pingHooked = true; }
-function hookDrawGame() { const orig = GD.drawGame; if (typeof orig !== "function" || GD.__drawHooked) return; GD.drawGame = function () { const r = orig.apply(this, arguments); try { drawOverlay(); } catch (e) {} return r; }; GD.__drawHooked = true; }
+function hookDrawGame() { const orig = GD.drawGame; if (typeof orig !== "function" || GD.__drawHooked) return; GD.drawGame = function () { try { applySpectator(); } catch (e) {} const r = orig.apply(this, arguments); try { drawOverlay(); } catch (e) {} return r; }; GD.__drawHooked = true; }
 let ctx = null, canvasEl = null;
 function hookCanvas() { canvasEl = $("game_canvas"); ctx = canvasEl && canvasEl.getContext("2d"); if (ctx && !ctx.__voidAlpha) { const o = ctx.drawImage; ctx.drawImage = function (...a) { if (S.Xray.active && wsReady) ctx.globalAlpha = S.Xray.opacity; return o.apply(this, a); }; ctx.__voidAlpha = true; } }
 function hookKeys() {
   document.addEventListener("keydown", e => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA")) return;
     if (e.code === S.Hidden.bind) { const g = document.querySelector(".void-gui"); if (g) g.classList.toggle("hidden"); return; }
-    for (const k in S) { const f = S[k]; if (f && f.bind === e.code && "active" in f) { f.active = !f.active; save(); } }
-    if (e.code === S.Spectator.bind) S.spectator = !S.spectator;
+    down[e.code] = 1;
+    for (const k in S) { const f = S[k]; if (f && f.bind === e.code && "active" in f) { f.active = f.active ? 0 : 1; save(); } }
     if (e.code === S.DropSword.bind) { const p = me(); if (p && weaponKind(p.right)) CL.WQS(p.right); }
   });
+  document.addEventListener("keyup", e => { down[e.code] = 0; });
 }
 
 /* ============================== 6. ustawienia ============================== */
@@ -354,14 +307,15 @@ const S = {
   accChanger: { active: 0, acc: 0 }, totemOnMap: { active: 1, x: 0, y: 0 }, deathOnMap: { active: 1, x: 0, y: 0 },
   drawLeaderboardAllies: 1, ZmaAutoCrown: 1, playerTracers: 1, ColoredSpikes: { texture: "Light", active: 1 },
   vehicleOpacity: .5, listEnabledHacks: { mode: "Bottom Left" }, movementPredictor: 1, blizzardAndSandstorm: 1,
-  Debugger: { mode: "None" }, equipAfterPlace: { active: 1 }, Spectator: { bind: "KeyV", speed: 25, active: 0 },
+  Debugger: { mode: "None" }, equipAfterPlace: { active: 1 }, Spectator: { active: 0, bind: "KeyV", speed: 30 },
   DropSword: { bind: "Backquote" }, Roof: { active: 1, opacity: .5 }, Hidden: { active: 0, bind: "KeyH" },
-  showLeaderBoardLevels: 1, increasedZoom: 0, canvasBrightness: 1, spectator: false,
+  showLeaderBoardLevels: 1, increasedZoom: 0, canvasBrightness: 1,
   market: { wood: 0, stone: 0, gold: 0, diamond: 0, amethyst: 0, reidite: 0 },
   localToken: { Token: cookie("starve_token"), TokenID: cookie("starve_token_id") },
   Aimbot: { active: 0, mode: "Only Attack", angle: 0, rangeVisual: 0, BowRange: 300, bind: "NONE" },
   Xray: { active: 1, opacity: .5, bind: "KeyZ" },
-  AutoSpike: { active: 0, mode: "Normal", bind: "KeyF", speed: 4 }, AutoWall: { active: 0, mode: "Normal", bind: "Space" },
+  AutoSpike: { active: 0, mode: "Normal", bind: "KeyF", speed: 4 },
+  AutoWall: { active: 0, mode: "Normal", bind: "Space" },
   AutoFire: { active: 0, bind: "NONE" }, AutoBuild: { active: 0, mode: "Bridges", bind: "NONE" }, AutoSteal: { active: 0, bind: "NONE" },
   AutoExtTake: { active: 0, bind: "NONE" }, AutoExtPut: { active: 0, bind: "NONE" },
   AutoBreadTake: { active: 0, bind: "NONE" }, AutoBreadPut: { active: 0, bind: "NONE" },
@@ -380,7 +334,7 @@ const S = {
 function setPath(path, val) { const p = path.split("."); const last = p.pop(); const o = p.reduce((a, k) => a && a[k], S); if (o && last in o) o[last] = val; }
 function save() { try { const out = {}; const walk = (o, pre) => { for (const k in o) { const v = o[k]; const p = pre ? pre + "." + k : k; if (v && typeof v === "object" && !Array.isArray(v)) walk(v, p); else out[p] = v; } }; walk(S, ""); localStorage.setItem("settings_all", JSON.stringify(out)); } catch (e) {} }
 
-/* ============================== 7. GUI (nowy wyglad) ============================== */
+/* ============================== 7. GUI (nowy, nowoczesny) ============================== */
 const cb  = (label, obj, prop, after) => ({ type:"checkbox", label, obj, prop, after });
 const rng = (label, obj, prop, min, max, step, after) => ({ type:"range", label, obj, prop, min, max, step, after });
 const sel = (label, obj, prop, options, after) => ({ type:"select", label, obj, prop, options, after });
@@ -394,8 +348,17 @@ function tracersFolder() {
            g("Sand", ["Sandworms","Crabs","KingCrabs","Vultures"]), g("Winter", ["BabyDragons","BabyMammoths","Bears","Dragons","Foxes","Mammoths","Penguins"]) ];
 }
 const guiConfig = {
-  title: "Void V7 Reborn", align: "right", draggable: true, fontSize: 14, opacity: 1, width: 900, height: 640,
+  title: "Void V7 Reborn", subtitle: "starve.io multihack", align: "right", draggable: true,
   folders: {
+    Combat: [
+      sub("Aimbot", [ cb("Aimbot", S.Aimbot, "active"), cb("Show Range", S.Aimbot, "rangeVisual"),
+        sel("Attack Mode", S.Aimbot, "mode", ["Only Attack","Attack & Chase","Rabbit Chase"]), rng("Bow Range", S.Aimbot, "BowRange", 100, 500, 10) ]),
+      sub("Auto Spike", [ cb("Auto Spike", S.AutoSpike, "active"), sel("Mode", S.AutoSpike, "mode", ["Normal","Spam"]), bind("Key:", S.AutoSpike) ]),
+      sub("Auto Wall", [ cb("Auto Wall", S.AutoWall, "active"), sel("Mode", S.AutoWall, "mode", ["Normal","Spam"]), bind("Key:", S.AutoWall) ]),
+      cb("Auto Fire", S.AutoFire, "active"),
+      sub("Spectator", [ cb("Spectator (freecam)", S.Spectator, "active"), rng("Speed", S.Spectator, "speed", 5, 120, 5), bind("Key:", S.Spectator) ]),
+      cb("Drop Sword (Backquote)", S.DropSword, "active")
+    ],
     Visuals: [
       cb("Dark Mode", S, "darkMode", afterTexture), cb("Fps", S, "fpsDisplay"), cb("Ping", S, "pingDisplay"),
       cb("Days Alive", S, "daysAlive"), cb("Time Played", S.timePlayed, "active"), cb("Timer", S, "gaugeTimer"),
@@ -404,12 +367,12 @@ const guiConfig = {
       cb("LeaderBoard Allies", S, "drawLeaderboardAllies"), cb("Player Tracers", S, "playerTracers"), cb("Players On Top", S, "playersOnTop"),
       cb("Treasure Chest On Top", S, "treasureChestOnTop"), cb("Box Info", S, "boxInfo"), cb("Fire Info", S, "fireInfo"),
       cb("Building Info", S, "buildingInfo"), cb("Move Prediction", S, "movementPredictor"), cb("Bliz And Storm", S, "blizzardAndSandstorm"),
+      cb("Xray", S.Xray, "active"), rng("Xray Opacity", S.Xray, "opacity", .1, 1, .05),
       sel("Show Hacks", S.listEnabledHacks, "mode", ["Bottom Left", "Top Left", "Off"]),
       sel("Debugger", S.Debugger, "mode", ["None", "No Roofs/Bridges", "Player IDS", "All"]),
       sel("Player Timers", S, "playerTimers", ["All", "Enemys", "None"]),
       sub("Chests", [ cb("Chest Info", S.chestInfo, "active"), sel("Chest Textures", S.chestInfo, "texture", ["Bright", "Light", "Dark"], afterTexture) ]),
       sub("Spikes", [ cb("Colored Spikes", S.ColoredSpikes, "active"), sel("Spike Textures", S.ColoredSpikes, "texture", ["Light", "Dark"], () => reloadTextures()) ]),
-      sub("Roofs", [ cb("Smooth Roofs", S, "smoothRoofs"), cb("Opaque Roofs", S.Roof, "active"), rng("Roofs Opacity", S.Roof, "opacity", .1, 1, .1) ]),
       sub("Opacitys", [ rng("Vehicles Opacity", S, "vehicleOpacity", .1, 1, .1), rng("Menus Opacity", S, "menuOpacity", .1, 1, .1, applyMenuOpacity) ]),
       rng("Brightness", S, "canvasBrightness", .5, 1.5, .1, applyBrightness)
     ],
@@ -422,80 +385,78 @@ const guiConfig = {
       cb("Auto Seed", S.AutoSeed, "active"), cb("Auto Crown", S.AutoCrown, "active"),
       cb("Extractor Take", S.AutoExtTake, "active"), cb("Extractor Put", S.AutoExtPut, "active"),
       cb("Bread Take", S.AutoBreadTake, "active"), cb("Bread Put", S.AutoBreadPut, "active"),
-      sub("Aimbot", [ cb("Aimbot", S.Aimbot, "active"), cb("Show Range", S.Aimbot, "rangeVisual"),
-        sel("Attack Mode", S.Aimbot, "mode", ["Only Attack","Attack & Chase","Rabbit Chase"]), rng("Bow Range", S.Aimbot, "BowRange", 100, 500, 10) ]),
       sub("Auto Build", [ cb("Auto Build", S.AutoBuild, "active"), sel("Mode", S.AutoBuild, "mode", ["Bridges","Roofs","Plots"]) ]),
-      sub("Spectator", [ cb("Spectator", S.Spectator, "active"), rng("Speed", S.Spectator, "speed", 10, 100, 5) ]),
       rng("Put To Chest", S, "putToChest", 10, 8000, 1)
     ],
     Crafting: [
-      sub("Auto Craft", [ cb("Auto Craft", S.AutoCraft, "active"), bind("AutoCraft Key:", S.AutoCraft) ]),
-      sub("Auto Recycle", [ cb("Auto Recycle", S.AutoRecycle, "active"), bind("AutoRecycle Key:", S.AutoRecycle) ]),
-      sub("Smart Craft", [ cb("Smart Craft", S.SmartCraft, "active"), bind("SmartCraft Key:", S.SmartCraft),
+      sub("Auto Craft", [ cb("Auto Craft", S.AutoCraft, "active"), bind("Key:", S.AutoCraft) ]),
+      sub("Auto Recycle", [ cb("Auto Recycle", S.AutoRecycle, "active"), bind("Key:", S.AutoRecycle) ]),
+      sub("Smart Craft", [ cb("Smart Craft", S.SmartCraft, "active"), bind("Key:", S.SmartCraft),
         sel("Craft Mode", S.SmartCraft, "option", ["Reidite Spikes","Amethyst Spikes","Diamond Spikes","Gold Spikes","Stone Spikes","Wood Spikes"]), rng("Amount", S.SmartCraft, "amount", 1, 100, 1) ]),
       sub("Skin Changer", [ cb("Skin Changer", S.skinChanger, "active"), rng("Skin", S.skinChanger, "skin", 0, 40, 1),
         cb("Bag Changer", S.bagChanger, "active"), rng("Bag", S.bagChanger, "bag", 0, 40, 1),
         cb("Acc Changer", S.accChanger, "active"), rng("Acc", S.accChanger, "acc", 0, 40, 1),
         cb("Book Changer", S.bookChanger, "active"), rng("Book", S.bookChanger, "book", 0, 40, 1) ]),
-      sub("Market", [ rng("Berries Amount", S.market, "wood", 0, 999, 1), btn("Convert Berries", () => convert("wood", 83, ITEM.PLANT)),
-        rng("Pumpkin Amount", S.market, "stone", 0, 999, 1), btn("Convert Pumpkin", () => convert("stone", 62, ITEM.PLANT)),
-        rng("Bread Amount", S.market, "gold", 0, 999, 1), btn("Convert Bread", () => convert("gold", 41, ITEM.PLANT)),
-        rng("Carrot Amount", S.market, "diamond", 0, 999, 1), btn("Convert Carrot", () => convert("diamond", 252, ITEM.PLANT)),
-        rng("Tomato Amount", S.market, "amethyst", 0, 999, 1), btn("Convert Tomato", () => convert("amethyst", 248, ITEM.PLANT)),
-        rng("Thornbush Amount", S.market, "reidite", 0, 999, 1), btn("Convert Thornbush", () => convert("reidite", 240, ITEM.PLANT)) ])
+      sub("Market", [ rng("Berries", S.market, "wood", 0, 999, 1), btn("Convert Berries", () => convert("wood", 83, ITEM.PLANT)),
+        rng("Pumpkin", S.market, "stone", 0, 999, 1), btn("Convert Pumpkin", () => convert("stone", 62, ITEM.PLANT)),
+        rng("Bread", S.market, "gold", 0, 999, 1), btn("Convert Bread", () => convert("gold", 41, ITEM.PLANT)),
+        rng("Carrot", S.market, "diamond", 0, 999, 1), btn("Convert Carrot", () => convert("diamond", 252, ITEM.PLANT)),
+        rng("Tomato", S.market, "amethyst", 0, 999, 1), btn("Convert Tomato", () => convert("amethyst", 248, ITEM.PLANT)),
+        rng("Thornbush", S.market, "reidite", 0, 999, 1), btn("Convert Thornbush", () => convert("reidite", 240, ITEM.PLANT)) ])
     ]
   }
 };
-
 const GUI_CSS = `
-.void-gui{position:fixed;top:0;right:0;width:900px;max-width:100vw;height:640px;max-height:100vh;background:rgba(16,17,22,.93);
- backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:14px;z-index:99999;
- color:#e8eaf0;font-family:'Inter','Segoe UI',system-ui,sans-serif;font-size:14px;display:flex;flex-direction:column;
- box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.void-gui{position:fixed;top:0;right:0;width:920px;max-width:100vw;height:660px;max-height:100vh;background:rgba(14,15,20,.94);
+ backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.1);border-radius:16px;z-index:99999;
+ color:#e9ebf1;font-family:'Inter','Segoe UI',system-ui,sans-serif;font-size:14px;display:flex;flex-direction:column;
+ box-shadow:0 26px 80px rgba(0,0,0,.65);overflow:hidden}
 .void-gui.hidden{display:none}
-.vg-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;
- background:linear-gradient(90deg,#7c3aed,#2563eb);font-weight:700;letter-spacing:.4px;cursor:move;user-select:none}
-.vg-title{font-size:15px}
-.vg-x{cursor:pointer;padding:1px 9px;border-radius:7px;background:rgba(255,255,255,.16);font-weight:600}
-.vg-x:hover{background:rgba(255,255,255,.3)}
+.vg-header{padding:13px 18px;background:linear-gradient(100deg,#7c3aed,#2563eb);user-select:none;cursor:move;display:flex;flex-direction:column;gap:2px;position:relative}
+.vg-title{font-size:16px;font-weight:800;letter-spacing:.3px}
+.vg-sub{font-size:11.5px;opacity:.85;font-weight:500}
+.vg-x{position:absolute;top:12px;right:14px;cursor:pointer;padding:2px 10px;border-radius:8px;background:rgba(255,255,255,.18);font-weight:700}
+.vg-x:hover{background:rgba(255,255,255,.32)}
+.vg-status{padding:7px 18px;font-size:11.5px;color:#8b93a7;background:rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.06);display:flex;gap:14px}
+.vg-status b{color:#c9cfdd;font-weight:600}
 .vg-body{display:flex;flex:1;min-height:0}
-.vg-side{width:176px;flex-shrink:0;padding:10px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;
- background:rgba(255,255,255,.03);border-right:1px solid rgba(255,255,255,.06)}
-.vg-side button{all:unset;cursor:pointer;padding:9px 12px;border-radius:9px;color:#c7cbd6;font-size:13.5px;font-weight:600;transition:.15s}
+.vg-side{width:184px;flex-shrink:0;padding:12px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;background:rgba(255,255,255,.025);border-right:1px solid rgba(255,255,255,.06)}
+.vg-side button{all:unset;cursor:pointer;padding:10px 13px;border-radius:10px;color:#c7cbd6;font-size:13.5px;font-weight:600;transition:.15s}
 .vg-side button:hover{background:rgba(255,255,255,.07);color:#fff}
-.vg-side button.active{background:linear-gradient(90deg,rgba(124,58,237,.28),rgba(37,99,235,.28));color:#fff;box-shadow:inset 0 0 0 1px rgba(124,58,237,.55)}
-.vg-content{flex:1;padding:14px 18px;overflow-y:auto}
-.vg-row{display:flex;align-items:center;gap:12px;padding:6px 8px;border-radius:8px}
-.vg-row:hover{background:rgba(255,255,255,.045)}
-.vg-label{flex:1;color:#d7dae2}
-.vg-sec{margin:14px 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:1.2px;color:#8b93a7;font-weight:700;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.07)}
-.vg-val{min-width:40px;text-align:right;color:#9aa3b8;font-variant-numeric:tabular-nums}
-.vg-switch{appearance:none;-webkit-appearance:none;width:42px;height:23px;border-radius:20px;background:#3a3f4d;position:relative;cursor:pointer;transition:.2s;flex-shrink:0;outline:none}
+.vg-side button.active{background:linear-gradient(90deg,rgba(124,58,237,.32),rgba(37,99,235,.32));color:#fff;box-shadow:inset 0 0 0 1px rgba(124,58,237,.6)}
+.vg-content{flex:1;padding:16px 20px;overflow-y:auto}
+.vg-row{display:flex;align-items:center;gap:14px;padding:7px 9px;border-radius:9px;transition:.12s}
+.vg-row:hover{background:rgba(255,255,255,.05)}
+.vg-label{flex:1;color:#d8dbe3}
+.vg-sec{margin:16px 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:#8b93a7;font-weight:800;padding-bottom:5px;border-bottom:1px solid rgba(255,255,255,.08)}
+.vg-val{min-width:42px;text-align:right;color:#9aa3b8;font-variant-numeric:tabular-nums}
+.vg-switch{appearance:none;-webkit-appearance:none;width:44px;height:24px;border-radius:20px;background:#3a3f4d;position:relative;cursor:pointer;transition:.2s;flex-shrink:0;outline:none}
 .vg-switch:checked{background:linear-gradient(90deg,#7c3aed,#2563eb)}
-.vg-switch::after{content:'';position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}
-.vg-switch:checked::after{left:21.5px}
-.vg-range{appearance:none;-webkit-appearance:none;height:6px;border-radius:6px;background:#3a3f4d;cursor:pointer;max-width:190px}
+.vg-switch::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}
+.vg-switch:checked::after{left:23px}
+.vg-range{appearance:none;-webkit-appearance:none;height:6px;border-radius:6px;background:#3a3f4d;cursor:pointer;max-width:200px}
 .vg-range::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.28)}
-.vg-select,.vg-input{background:#232733;color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px;outline:none}
-.vg-btn{background:#2a2f3c;color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 14px;cursor:pointer;font:inherit;font-size:13px;font-weight:600}
+.vg-select,.vg-input{background:#232733;color:#e9ebf1;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 9px;font:inherit;font-size:13px;outline:none}
+.vg-btn{background:#2a2f3c;color:#e9ebf1;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 15px;cursor:pointer;font:inherit;font-size:13px;font-weight:600}
 .vg-btn:hover{background:#343b4b}
 .vg-content::-webkit-scrollbar,.vg-side::-webkit-scrollbar{width:9px}
 .vg-content::-webkit-scrollbar-thumb,.vg-side::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:9px}
 `;
 let __vgCss = false;
 function injectGuiCss() { if (__vgCss) return; __vgCss = true; const s = document.createElement("style"); s.textContent = GUI_CSS; document.head.appendChild(s); }
-
 class Gui {
-  constructor(cfg) { this.cfg = cfg; this.container = null; this.content = null; this.activeBtn = null; }
-  build() { injectGuiCss(); const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"; document.head.appendChild(l); this._build(); }
+  constructor(cfg) { this.cfg = cfg; this.container = null; this.content = null; this.activeBtn = null; this.status = null; }
+  build() { injectGuiCss(); const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap"; document.head.appendChild(l); this._build(); this._tick(); }
   _build() {
     if (this.container) return;
     const c = document.createElement("div"); this.container = c; c.className = "void-gui"; c.id = xor("voidGui");
     if (this.cfg.align === "left") { c.style.left = "0"; c.style.right = "auto"; }
     const head = document.createElement("div"); head.className = "vg-header";
-    const t = document.createElement("span"); t.className = "vg-title"; t.textContent = this.cfg.title;
+    const t = document.createElement("div"); t.className = "vg-title"; t.textContent = this.cfg.title;
+    const s = document.createElement("div"); s.className = "vg-sub"; s.textContent = this.cfg.subtitle;
     const x = document.createElement("span"); x.className = "vg-x"; x.textContent = "✕"; x.onclick = () => c.classList.toggle("hidden");
-    head.appendChild(t); head.appendChild(x); c.appendChild(head);
+    head.appendChild(t); head.appendChild(s); head.appendChild(x); c.appendChild(head);
+    const st = document.createElement("div"); st.className = "vg-status"; this.status = st; c.appendChild(st);
     const body = document.createElement("div"); body.className = "vg-body"; c.appendChild(body);
     const side = document.createElement("div"); side.className = "vg-side"; body.appendChild(side);
     const content = document.createElement("div"); content.className = "vg-content"; content.id = xor("content"); body.appendChild(content);
@@ -505,6 +466,7 @@ class Gui {
     document.body.appendChild(c); window.__VOID_GUI = c;
     const first = side.firstChild; if (first) first.click();
   }
+  _tick() { const upd = () => { if (this.status) this.status.innerHTML = "<span>FPS: <b>" + fpsText.replace(" FPS","") + "</b></span><span>Ping: <b>" + (pingText || 0) + " ms</b></span><span>Stan: <b>" + (wsReady ? "w grze" : "menu") + "</b></span><span>Hack: <b>v8.0</b></span>"; setTimeout(upd, 500); }; upd(); }
   _drag(el, handle) { let sx, sy, ox, oy, on = false; handle.addEventListener("mousedown", e => { on = true; sx = e.clientX; sy = e.clientY; const r = el.getBoundingClientRect(); ox = r.left; oy = r.top; el.style.left = ox + "px"; el.style.top = oy + "px"; el.style.right = "auto"; }); document.addEventListener("mousemove", e => { if (!on) return; el.style.left = (ox + e.clientX - sx) + "px"; el.style.top = (oy + e.clientY - sy) + "px"; }); document.addEventListener("mouseup", () => on = false); }
   _folder(name) { const items = this.cfg.folders[name] || []; this.content.innerHTML = ""; const render = list => { for (const it of list) { if (it.type === "subfolder") { const h = document.createElement("div"); h.className = "vg-sec"; h.textContent = it.label; this.content.appendChild(h); const w = document.createElement("div"); this.content.appendChild(w); const p = this.content; this.content = w; render(it.subfolder); this.content = p; } else this._item(it); } }; render(items); }
   _item(item) {
@@ -528,7 +490,7 @@ const TEX_BASE = "https://raw.githubusercontent.com/shwtdev/Void_V6/refs/heads/m
 const spikeTex = {};
 function reloadTextures() { const set = TEX[S.ColoredSpikes.texture] || TEX.Light; for (const k in set) { if (!spikeTex[k]) spikeTex[k] = new Image(); spikeTex[k].src = TEX_BASE + set[k] + ".png"; } }
 
-/* ============================== 8. rysowanie / helpery ============================== */
+/* ============================== 8. helpery / spectator / rysowanie ============================== */
 function me() { return WD.fast_units ? WD.fast_units[WD.uid] : null; }
 function dist(a, b) { return (a && b) ? Math.hypot(a.x - b.x, a.y - b.y) : null; }
 function angleTo(t, f) { return Math.atan2(t.y - f.y, t.x - f.x); }
@@ -542,6 +504,17 @@ const WEAPON_RANGE = [133, 203, 110, 120, 143];
 function weaponKind(it) { if (it == null) return 0; if ([ITEM.SWORD,ITEM.SWORD_GOLD,ITEM.SWORD_DIAMOND,ITEM.REIDITE_SWORD,ITEM.SWORD_AMETHYST,ITEM.LAVA_SWORD].includes(it)) return 1; if ([ITEM.WOOD_SPEAR,ITEM.SPEAR,ITEM.GOLD_SPEAR,ITEM.DIAMOND_SPEAR,ITEM.AMETHYST_SPEAR,ITEM.REIDITE_SPEAR].includes(it)) return 2; if (it === ITEM.SUPER_HAMMER) return 4; if ([ITEM.WOOD_BOW,ITEM.STONE_BOW,ITEM.GOLD_BOW,ITEM.DIAMOND_BOW,ITEM.AMETHYST_BOW,ITEM.REIDITE_BOW].includes(it)) return 6; return 0; }
 function nearestPlayer(range, excludeFly) { const p = me(); if (!p) return null; let best = null, bd = range || 550; for (const u of (WD.units[E.PLAYERS] || [])) { const pid = u[WD.pid]; if (pid === USER.id || u[WD.ghost]) continue; if (excludeFly && p[WD.fly] !== u[WD.fly]) continue; const d = dist(p, u); if (d !== null && d < bd) { best = u; bd = d; } } return best; }
 function moveTowards(p, tgt, tol) { const dx = p.x - tgt.x, dy = p.y - tgt.y; let m = 0; if (Math.abs(dx) > tol) m += dx > 0 ? 1 : 2; if (Math.abs(dy) > tol) m += dy > 0 ? 8 : 4; CL.WQW(m); }
+/* --- SPECTATOR (freecam) --- */
+let specPos = null;
+function applySpectator() {
+  const cam = UD.WUF; if (!cam) return;
+  if (!S.Spectator.active) { specPos = null; return; }
+  if (!specPos) specPos = { x: cam.x, y: cam.y };
+  const v = (S.Spectator.speed || 30) * 2.2;
+  if (down.KeyW) specPos.y += v; if (down.KeyS) specPos.y -= v;
+  if (down.KeyA) specPos.x += v; if (down.KeyD) specPos.x -= v;
+  cam.x = specPos.x; cam.y = specPos.y;
+}
 let fpsText = "0 FPS", lastFpsT = Date.now(), lastFrameT = Date.now();
 function drawOverlay() {
   if (!ctx || !wsReady) return; const p = me(); if (!p) return;
@@ -556,6 +529,7 @@ function drawOverlay() {
   ctx.save(); ctx.font = "16px Inter, sans-serif"; let y = 30;
   if (S.fpsDisplay) { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#fff"; ctx.strokeText(fpsText, 12, y); ctx.fillText(fpsText, 12, y); y += 20; }
   if (S.pingDisplay && pingText) { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#0ff"; ctx.strokeText(pingText + " ms", 12, y); ctx.fillText(pingText + " ms", 12, y); y += 20; }
+  if (S.Spectator.active) { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#c084fc"; ctx.strokeText("SPECTATOR", 12, y); ctx.fillText("SPECTATOR", 12, y); y += 20; }
   if (S.listEnabledHacks.mode !== "Off") { let ly = S.listEnabledHacks.mode === "Bottom Left" ? ctx.canvas.height - 20 : 60; for (const k in S) { const f = S[k]; if (f && f.active && f.bind && f.bind !== "NONE") { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#0f0"; ctx.strokeText(k, 12, ly); ctx.fillText(k, 12, ly); ly += S.listEnabledHacks.mode === "Bottom Left" ? -20 : 20; } } }
   ctx.restore();
 }
@@ -615,13 +589,10 @@ function startInstall() {
       log("ZAINSTALOWANO — hack aktywny", "lime");
     } else if (tries === 150) {
       log("!!! instalacja utknela. captured=" + captured.length + " brak=" + missing.join(","), "orange");
-      captured.slice(0, 15).forEach((o, i) => { try { log("#" + i + ": " + Object.keys(o).slice(0, 25).join(",")); } catch (e) {} });
     }
   }, 200);
 }
 try {
-  const gs = localStorage.getItem("guiSettings");
-  if (gs) { const a = JSON.parse(gs); ["align","draggable","fontSize","opacity","width","height"].forEach((k, i) => { if (a[i] !== undefined) guiConfig[k] = a[i]; }); }
   const st = localStorage.getItem("settings_all");
   if (st) { const o = JSON.parse(st); for (const p in o) setPath(p, o[p]); }
 } catch (e) {}

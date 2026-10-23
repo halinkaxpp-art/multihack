@@ -1,15 +1,13 @@
 /* ============================================================================
-   Void V7 Reborn — loader.js (v7.3, pełny plik)
+   Void V7 Reborn — loader.js (v7.4, pełny plik)
    ============================================================================ */
 (async function () {
 "use strict";
 
 const log  = (m, c) => console.log("%c[Void] " + m, "color:" + (c || "cyan") + ";font-weight:bold");
-const warn = (m, ...a) => console.warn("[Void] " + m, ...a);
 const $    = (id) => document.getElementById(id);
 const xor  = (s) => Array.from(s).map(c => String.fromCharCode(c.charCodeAt(0) ^ 1410065407)).join("");
 const F    = function () {};
-
 window.addEventListener("error", e => log("BLAD: " + e.message + " @ " + e.filename + ":" + e.lineno));
 window.addEventListener("unhandledrejection", e => log("BLAD PROMISE: " + ((e.reason && (e.reason.stack || e.reason)) || e.reason)));
 
@@ -88,7 +86,6 @@ const idb = () => new Promise((res, rej) => {
 });
 const idbGet = async (k) => { const db = await idb(); return new Promise(res => { const q = db.transaction("data","readonly").objectStore("data").get(k); q.onsuccess = (ev) => res((ev.target || q).result); }); };
 const idbPut = async (k, v) => { const db = await idb(); return new Promise(res => { const q = db.transaction("data","readwrite").objectStore("data").put(v, k); q.onsuccess = () => res(); }); };
-
 const objKeys = (o) => (o && o.properties ? o.properties.map(p => p.key && (p.key.name !== undefined ? p.key.name : p.key.value)) : []);
 const objVals = (o) => (o && o.properties ? o.properties.map(p => p.value && p.value.value) : []);
 
@@ -96,7 +93,6 @@ function detectProps(ast) {
   const out = ["", "", "", "", ""];
   (function walk(n) {
     if (!n || typeof n !== "object") return;
-    /* props[0] — SequenceExpression z kursorem */
     if (!out[0] && n.type === "SequenceExpression") {
       let cur = null, other = null;
       for (const e of n.expressions) {
@@ -105,13 +101,11 @@ function detectProps(ast) {
       }
       if (cur && other) out[0] = other.left.property.name;
     }
-    /* props[1] = tablica 9 tablic; props[3] = ~1e6; props[2]/[4] = obiekt z kluczem */
     if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name && n.right) {
       const nm = n.left.property.name, r = n.right;
       if (!out[1] && r.type === "ArrayExpression" && r.elements.length === 9 && r.elements.every(e => e && e.type === "ArrayExpression")) out[1] = nm;
       if (!out[3]) {
         if (r.type === "UnaryExpression" && r.operator === "~" && r.argument && Math.abs((r.argument.value || 0) - 1e6) < 1) out[3] = nm;
-        else if (r.type === "UnaryExpression" && r.operator === "-" && r.argument && r.argument.type === "UnaryExpression" && r.argument.operator === "~" && Math.abs((((r.argument.argument || {}).value) || 0) - 1e6) < 1) out[3] = nm;
         else if (r.type === "Literal" && (r.value === 1000000 || r.value === -1000001 || r.value === -1e6)) out[3] = nm;
       }
       if (r.type === "ObjectExpression") {
@@ -128,8 +122,7 @@ function extraCandidates(ast) {
   const set = new Set();
   (function walk(n) {
     if (!n || typeof n !== "object") return;
-    if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name &&
-        n.right && n.right.type === "ObjectExpression" && n.right.properties.length >= 3 && n.left.property.name.length <= 6) set.add(n.left.property.name);
+    if (n.type === "AssignmentExpression" && n.left && n.left.property && n.left.property.name && n.right && n.right.type === "ObjectExpression" && n.right.properties.length >= 3 && n.left.property.name.length <= 6) set.add(n.left.property.name);
     for (const k in n) { const v = n[k]; if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object") walk(v); }
   })(ast);
   return [...set];
@@ -142,18 +135,12 @@ async function getProps() {
   let cached = null;
   try { cached = await idbGet(PROPS_KEY); } catch (e) {}
   if (cached && cached.filter(Boolean).length >= 5 && !window.__VOID_REDETECT) { log("props z cache v3: " + JSON.stringify(cached)); return cached; }
-
   log("wykrywam propsy (surowy kod)...");
   const rawAst = parse(GAME_SRC);
   if (rawAst) PROPS = detectProps(rawAst);
-
   if (!PROPS || PROPS.filter(Boolean).length < 5) {
     log("probuje na zminifikowanym (Terser)...");
-    try {
-      const m = await window.Terser.minify(GAME_SRC, { compress: { passes: 1 }, mangle: false });
-      const minAst = parse(m.code);
-      if (minAst) { const p2 = detectProps(minAst); PROPS = PROPS ? PROPS.map((v, i) => v || p2[i]) : p2; }
-    } catch (e) { log("terser err: " + e.message); }
+    try { const m = await window.Terser.minify(GAME_SRC, { compress: { passes: 1 }, mangle: false }); const minAst = parse(m.code); if (minAst) { const p2 = detectProps(minAst); PROPS = PROPS ? PROPS.map((v, i) => v || p2[i]) : p2; } } catch (e) { log("terser err: " + e.message); }
   }
   if (!PROPS) PROPS = ["", "", "", "", ""];
   log("props wykryte: " + JSON.stringify(PROPS));
@@ -163,15 +150,8 @@ async function getProps() {
   return PROPS;
 }
 PROPS = await getProps();
-
-/* lista do hookowania (5 wykrytych + ewentualne zapasowe, gdy braki) */
 const HOOK = [...new Set(PROPS.filter(Boolean))];
-if (HOOK.length < 5) {
-  const ast = parse(GAME_SRC);
-  const extra = ast ? extraCandidates(ast) : [];
-  for (const n of extra) { if (HOOK.length >= 60) break; if (!HOOK.includes(n)) HOOK.push(n); }
-  log("hookuje dodatkowe kandydaty (" + (HOOK.length - PROPS.filter(Boolean).length) + ")");
-}
+if (HOOK.length < 5) { const ast = parse(GAME_SRC); const extra = ast ? extraCandidates(ast) : []; for (const n of extra) { if (HOOK.length >= 60) break; if (!HOOK.includes(n)) HOOK.push(n); } log("hookuje dodatkowe kandydaty (" + (HOOK.length - PROPS.filter(Boolean).length) + ")"); }
 if (!HOOK.length) { log("brak propsow do hookowania", "red"); return; }
 
 /* ============================== 3. hook prototypu ============================== */
@@ -179,16 +159,7 @@ window.__VOID_CAP = window.__VOID_CAP || [];
 const captured = window.__VOID_CAP;
 (function hookPrototype() {
   const slot = "\u200b";
-  for (const p of HOOK) {
-    if (!p) continue;
-    try {
-      Object.defineProperty(Object.prototype, p, {
-        configurable: true,
-        get() { return this[slot + p]; },
-        set(v) { this[slot + p] = v; if (v && typeof v === "object" && captured.length < 8000 && !captured.includes(this)) captured.push(this); }
-      });
-    } catch (e) {}
-  }
+  for (const p of HOOK) { if (!p) continue; try { Object.defineProperty(Object.prototype, p, { configurable: true, get() { return this[slot + p]; }, set(v) { this[slot + p] = v; if (v && typeof v === "object" && captured.length < 8000 && !captured.includes(this)) captured.push(this); } }); } catch (e) {} }
   const _keys = Object.keys;
   Object.keys = (o) => (o === null || o === undefined) ? [] : _keys(o);
   Object.keys.toString = () => "function keys() { [native code] }";
@@ -197,7 +168,6 @@ const captured = window.__VOID_CAP;
 /* ============================== 4. store + mapowanie ============================== */
 const CL = {}, GD = {}, UI = {}, WD = {}, UD = {}, MS = {};
 Object.defineProperties(window, { v2600:{get:()=>CL}, v2601:{get:()=>GD}, v2602:{get:()=>UI}, v2603:{get:()=>WD}, v2604:{get:()=>UD}, v2605:{get:()=>MS} });
-
 let CLIENT=null, WORLD=null, USER=null, GAME=null, OPTS=null;
 let installed = false, wsReady = false, mapW = 0, mapH = 0, pingSent = 0, pingText = 0, lastGaugeT = Date.now();
 
@@ -212,6 +182,7 @@ const sim = (a,b) => { const x = counts(a), y = counts(b); const n = (x.s===y.s)
 const lines = s => { try { return window.js_beautify(s).split("\n").length; } catch (e) { return s.split("\n").length; } };
 const def = (dst, name, src, key) => Object.defineProperty(dst, name, { configurable:true, get(){ return src[key]; }, set(v){ src[key] = v; } });
 
+/* ====== NAPRAWIONE mapowanie (bug: puste spec[] blokowalo WSZYSTKIE funkcje) ====== */
 function assign(prefix, src, dst, name, type, spec, fnLen, callCnt, lineCnt, mustInc, refSrc, pick) {
   if (dst[name] !== undefined) { assigned.push(prefix + name); return; }
   let hit = 0;
@@ -220,14 +191,15 @@ function assign(prefix, src, dst, name, type, spec, fnLen, callCnt, lineCnt, mus
     const key = keys[i], val = src[key];
     if (assigned.includes(prefix + key)) continue;
     if (typeof type === "function" && typeof val === "function") {
-      if (lineCnt && lineCnt !== "any" && lines(val.toString()) !== lineCnt) continue;
-      let strs = strings(unesc(val.toString())); if (strs.join("").length > 300 || !strs.length) strs = [];
-      const kw = (Array.isArray(spec) ? spec : []).some(k => strs.some(s => s.includes(k))) || (strs.length && spec[0] === "any");
-      const inc = mustInc === "any" || !mustInc || mustInc === "none" || val.toString().includes(mustInc);
-      const fnOk = fnLen === "any" || fnLen === undefined || val.length === fnLen;
-      const callOk = callCnt === "any" || callCnt === undefined || countCalls(val.toString()) === callCnt;
-      const simOk = !refSrc || sim(refSrc, val.toString()) >= 100;
-      if (kw && inc && fnOk && callOk && simOk) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
+      const raw = val.toString();
+      if (lineCnt && lineCnt !== "any" && lines(raw) !== lineCnt) continue;
+      let strs = strings(unesc(raw)); if (strs.join("").length > 300 || !strs.length) strs = [];
+      const kwOk  = !spec.length || spec.some(k => strs.some(s => s.includes(k))) || (strs.length && spec[0] === "any");
+      const incOk = !mustInc || mustInc === "any" || mustInc === "none" || raw.includes(mustInc);
+      const fnOk  = fnLen === "any" || fnLen === undefined || val.length === fnLen;
+      const callOk= callCnt === "any" || callCnt === undefined || countCalls(raw) === callCnt;
+      const simOk = !refSrc || sim(refSrc, raw) >= 100;
+      if (kwOk && incOk && fnOk && callOk && simOk) { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
     } else if (Array.isArray(type) && Array.isArray(val)) {
       if (lenOf(val) === spec || spec === "any") { if (pick) { hit++; if (hit !== pick) continue; } def(dst, name, src, key); assigned.push(prefix + key); assignLog.push([prefix + name, fnLen]); return; }
     } else if (type && typeof type === "object" && !Array.isArray(type) && val && typeof val === "object" && !Array.isArray(val)) {
@@ -330,7 +302,7 @@ function mapAll() {
   assign("user", USER, UD, "WVF", 0, 0, "any", "any", "any", "any", "any", 4);
   assign("user", USER, UD, "WVG", false, false, "any", "any", "any", "any", "any", 2);
   try { for (const k in USER) { if (USER[k] === -1) { MS.iid = k; break; } } } catch (e) {}
-  log("mapowanie propsow gotowe (" + assigned.length + " pol)");
+  log("zmapowano: client=" + Object.keys(CL).length + " game=" + Object.keys(GD).length + " ui=" + Object.keys(UI).length + " world=" + Object.keys(WD).length + " user=" + Object.keys(UD).length);
 }
 
 /* ============================== 5. hooki sieci ============================== */
@@ -339,20 +311,15 @@ const spamStore = {}; const pkt = { camera: null, build: null };
 function hookWebSocket() {
   if (!CL.websocket || wsOrig === CL.websocket) return;
   if (wsOrig) { try { wsOrig.close(); } catch (e) {} }
-  wsOrig = CL.websocket;
-  onopenFn = wsOrig.onopen ? wsOrig.onopen.bind(wsOrig) : null;
-  sendFn = wsOrig.send.bind(wsOrig);
+  wsOrig = CL.websocket; onopenFn = wsOrig.onopen ? wsOrig.onopen.bind(wsOrig) : null; sendFn = wsOrig.send.bind(wsOrig);
   wsOrig.send = function (data) {
-    try {
-      if (wsOrig.readyState !== 1) return;
-      if (typeof data === "string") {
-        const a = JSON.parse(data);
+    try { if (wsOrig.readyState !== 1) return;
+      if (typeof data === "string") { const a = JSON.parse(data);
         if (pkt.camera == null && a.length === 3) pkt.camera = a[0];
         if (pkt.build == null && a.length === 4) { pkt.build = a[0]; return sendFn(data); }
         if (a[0] === pkt.build) { if (a[1] === E.TOTEM) { const p = me(); if (p) { S.totemOnMap.x = p.x / (mapW * 100); S.totemOnMap.y = p.y / (mapH * 100); } } return sendFn(data); }
         if (a[0] === pkt.camera) return sendFn(a);
-      }
-    } catch (e) {}
+      } } catch (e) {}
     return sendFn(data);
   };
   wsOrig.onopen = function () { wsReady = true; for (const k in spamStore) { spamStore[k] = S[k] && S[k].active; if (S[k]) S[k].active = false; } onopenFn && onopenFn(); };
@@ -369,7 +336,7 @@ let ctx = null, canvasEl = null;
 function hookCanvas() { canvasEl = $("game_canvas"); ctx = canvasEl && canvasEl.getContext("2d"); if (ctx && !ctx.__voidAlpha) { const o = ctx.drawImage; ctx.drawImage = function (...a) { if (S.Xray.active && wsReady) ctx.globalAlpha = S.Xray.opacity; return o.apply(this, a); }; ctx.__voidAlpha = true; } }
 function hookKeys() {
   document.addEventListener("keydown", e => {
-    if (e.code === S.Hidden.bind) { S.Hidden.active = !S.Hidden.active; applyMenuOpacity(); const g = $(xor("voidGui")); if (g) g.style.display = S.Hidden.active ? "none" : "flex"; return; }
+    if (e.code === S.Hidden.bind) { const g = document.querySelector(".void-gui"); if (g) g.classList.toggle("hidden"); return; }
     for (const k in S) { const f = S[k]; if (f && f.bind === e.code && "active" in f) { f.active = !f.active; save(); } }
     if (e.code === S.Spectator.bind) S.spectator = !S.spectator;
     if (e.code === S.DropSword.bind) { const p = me(); if (p && weaponKind(p.right)) CL.WQS(p.right); }
@@ -413,7 +380,7 @@ const S = {
 function setPath(path, val) { const p = path.split("."); const last = p.pop(); const o = p.reduce((a, k) => a && a[k], S); if (o && last in o) o[last] = val; }
 function save() { try { const out = {}; const walk = (o, pre) => { for (const k in o) { const v = o[k]; const p = pre ? pre + "." + k : k; if (v && typeof v === "object" && !Array.isArray(v)) walk(v, p); else out[p] = v; } }; walk(S, ""); localStorage.setItem("settings_all", JSON.stringify(out)); } catch (e) {} }
 
-/* ============================== 7. GUI ============================== */
+/* ============================== 7. GUI (nowy wyglad) ============================== */
 const cb  = (label, obj, prop, after) => ({ type:"checkbox", label, obj, prop, after });
 const rng = (label, obj, prop, min, max, step, after) => ({ type:"range", label, obj, prop, min, max, step, after });
 const sel = (label, obj, prop, options, after) => ({ type:"select", label, obj, prop, options, after });
@@ -422,14 +389,12 @@ const btn = (label, action) => ({ type:"button", label, action });
 const sub = (label, items) => ({ type:"subfolder", label, subfolder: items });
 function tracersFolder() {
   const g = (n, props) => sub(n, props.map(p => cb(p, S.Tracers, p)));
-  return [ g("Forest", ["Boars","GoldenChicken","GoldenHen","Hawks","Rabbits","Spiders","Wolfs"]),
-           g("Jungle", ["Ocelots","Crocodiles","Parrots"]), g("Lava", ["BabyLavaDragons","FireMobs","LavaDragons"]),
-           g("Ocean", ["Krakens","Piranhas"]), g("Sand", ["Sandworms","Crabs","KingCrabs","Vultures"]),
-           g("Winter", ["BabyDragons","BabyMammoths","Bears","Dragons","Foxes","Mammoths","Penguins"]) ];
+  return [ g("Forest", ["Boars","GoldenChicken","GoldenHen","Hawks","Rabbits","Spiders","Wolfs"]), g("Jungle", ["Ocelots","Crocodiles","Parrots"]),
+           g("Lava", ["BabyLavaDragons","FireMobs","LavaDragons"]), g("Ocean", ["Krakens","Piranhas"]),
+           g("Sand", ["Sandworms","Crabs","KingCrabs","Vultures"]), g("Winter", ["BabyDragons","BabyMammoths","Bears","Dragons","Foxes","Mammoths","Penguins"]) ];
 }
 const guiConfig = {
-  title: "Void V7 Reborn", align: "right", toggleGuiKey: "NONE", toggleGuiButton: true, draggable: true,
-  fontSize: 18, opacity: .85, width: 880, height: 630,
+  title: "Void V7 Reborn", align: "right", draggable: true, fontSize: 14, opacity: 1, width: 900, height: 640,
   folders: {
     Visuals: [
       cb("Dark Mode", S, "darkMode", afterTexture), cb("Fps", S, "fpsDisplay"), cb("Ping", S, "pingDisplay"),
@@ -457,18 +422,17 @@ const guiConfig = {
       cb("Auto Seed", S.AutoSeed, "active"), cb("Auto Crown", S.AutoCrown, "active"),
       cb("Extractor Take", S.AutoExtTake, "active"), cb("Extractor Put", S.AutoExtPut, "active"),
       cb("Bread Take", S.AutoBreadTake, "active"), cb("Bread Put", S.AutoBreadPut, "active"),
-      sub("Aimbot Settings", [ cb("Aimbot", S.Aimbot, "active"), cb("Show Range", S.Aimbot, "rangeVisual"),
+      sub("Aimbot", [ cb("Aimbot", S.Aimbot, "active"), cb("Show Range", S.Aimbot, "rangeVisual"),
         sel("Attack Mode", S.Aimbot, "mode", ["Only Attack","Attack & Chase","Rabbit Chase"]), rng("Bow Range", S.Aimbot, "BowRange", 100, 500, 10) ]),
-      sub("Auto Build Settings", [ cb("Auto Build", S.AutoBuild, "active"), sel("Mode", S.AutoBuild, "mode", ["Bridges","Roofs","Plots"]) ]),
-      sub("Spectator Settings", [ cb("Spectator", S.Spectator, "active"), rng("Speed", S.Spectator, "speed", 10, 100, 5) ]),
+      sub("Auto Build", [ cb("Auto Build", S.AutoBuild, "active"), sel("Mode", S.AutoBuild, "mode", ["Bridges","Roofs","Plots"]) ]),
+      sub("Spectator", [ cb("Spectator", S.Spectator, "active"), rng("Speed", S.Spectator, "speed", 10, 100, 5) ]),
       rng("Put To Chest", S, "putToChest", 10, 8000, 1)
     ],
     Crafting: [
-      sub("Auto Craft Settings", [ cb("Auto Craft", S.AutoCraft, "active"), bind("AutoCraft Key:", S.AutoCraft) ]),
-      sub("Auto Recycle Settings", [ cb("Auto Recycle", S.AutoRecycle, "active"), bind("AutoRecycle Key:", S.AutoRecycle) ]),
-      sub("Smart Craft Settings", [ cb("Smart Craft", S.SmartCraft, "active"), bind("SmartCraft Key:", S.SmartCraft),
-        sel("Craft Mode", S.SmartCraft, "option", ["Reidite Spikes","Amethyst Spikes","Diamond Spikes","Gold Spikes","Stone Spikes","Wood Spikes"]),
-        rng("Amount", S.SmartCraft, "amount", 1, 100, 1) ]),
+      sub("Auto Craft", [ cb("Auto Craft", S.AutoCraft, "active"), bind("AutoCraft Key:", S.AutoCraft) ]),
+      sub("Auto Recycle", [ cb("Auto Recycle", S.AutoRecycle, "active"), bind("AutoRecycle Key:", S.AutoRecycle) ]),
+      sub("Smart Craft", [ cb("Smart Craft", S.SmartCraft, "active"), bind("SmartCraft Key:", S.SmartCraft),
+        sel("Craft Mode", S.SmartCraft, "option", ["Reidite Spikes","Amethyst Spikes","Diamond Spikes","Gold Spikes","Stone Spikes","Wood Spikes"]), rng("Amount", S.SmartCraft, "amount", 1, 100, 1) ]),
       sub("Skin Changer", [ cb("Skin Changer", S.skinChanger, "active"), rng("Skin", S.skinChanger, "skin", 0, 40, 1),
         cb("Bag Changer", S.bagChanger, "active"), rng("Bag", S.bagChanger, "bag", 0, 40, 1),
         cb("Acc Changer", S.accChanger, "active"), rng("Acc", S.accChanger, "acc", 0, 40, 1),
@@ -482,44 +446,76 @@ const guiConfig = {
     ]
   }
 };
+
+const GUI_CSS = `
+.void-gui{position:fixed;top:0;right:0;width:900px;max-width:100vw;height:640px;max-height:100vh;background:rgba(16,17,22,.93);
+ backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:14px;z-index:99999;
+ color:#e8eaf0;font-family:'Inter','Segoe UI',system-ui,sans-serif;font-size:14px;display:flex;flex-direction:column;
+ box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.void-gui.hidden{display:none}
+.vg-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;
+ background:linear-gradient(90deg,#7c3aed,#2563eb);font-weight:700;letter-spacing:.4px;cursor:move;user-select:none}
+.vg-title{font-size:15px}
+.vg-x{cursor:pointer;padding:1px 9px;border-radius:7px;background:rgba(255,255,255,.16);font-weight:600}
+.vg-x:hover{background:rgba(255,255,255,.3)}
+.vg-body{display:flex;flex:1;min-height:0}
+.vg-side{width:176px;flex-shrink:0;padding:10px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;
+ background:rgba(255,255,255,.03);border-right:1px solid rgba(255,255,255,.06)}
+.vg-side button{all:unset;cursor:pointer;padding:9px 12px;border-radius:9px;color:#c7cbd6;font-size:13.5px;font-weight:600;transition:.15s}
+.vg-side button:hover{background:rgba(255,255,255,.07);color:#fff}
+.vg-side button.active{background:linear-gradient(90deg,rgba(124,58,237,.28),rgba(37,99,235,.28));color:#fff;box-shadow:inset 0 0 0 1px rgba(124,58,237,.55)}
+.vg-content{flex:1;padding:14px 18px;overflow-y:auto}
+.vg-row{display:flex;align-items:center;gap:12px;padding:6px 8px;border-radius:8px}
+.vg-row:hover{background:rgba(255,255,255,.045)}
+.vg-label{flex:1;color:#d7dae2}
+.vg-sec{margin:14px 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:1.2px;color:#8b93a7;font-weight:700;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.07)}
+.vg-val{min-width:40px;text-align:right;color:#9aa3b8;font-variant-numeric:tabular-nums}
+.vg-switch{appearance:none;-webkit-appearance:none;width:42px;height:23px;border-radius:20px;background:#3a3f4d;position:relative;cursor:pointer;transition:.2s;flex-shrink:0;outline:none}
+.vg-switch:checked{background:linear-gradient(90deg,#7c3aed,#2563eb)}
+.vg-switch::after{content:'';position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}
+.vg-switch:checked::after{left:21.5px}
+.vg-range{appearance:none;-webkit-appearance:none;height:6px;border-radius:6px;background:#3a3f4d;cursor:pointer;max-width:190px}
+.vg-range::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.28)}
+.vg-select,.vg-input{background:#232733;color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px;outline:none}
+.vg-btn{background:#2a2f3c;color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 14px;cursor:pointer;font:inherit;font-size:13px;font-weight:600}
+.vg-btn:hover{background:#343b4b}
+.vg-content::-webkit-scrollbar,.vg-side::-webkit-scrollbar{width:9px}
+.vg-content::-webkit-scrollbar-thumb,.vg-side::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:9px}
+`;
+let __vgCss = false;
+function injectGuiCss() { if (__vgCss) return; __vgCss = true; const s = document.createElement("style"); s.textContent = GUI_CSS; document.head.appendChild(s); }
+
 class Gui {
-  constructor(cfg) { this.cfg = cfg; this.container = null; }
-  build() { if (this.container) return; const link = document.createElement("link"); link.rel = "stylesheet"; link.href = "https://fonts.googleapis.com/css2?family=Baloo+Paaji&display=swap"; document.head.appendChild(link); this._build(); }
+  constructor(cfg) { this.cfg = cfg; this.container = null; this.content = null; this.activeBtn = null; }
+  build() { injectGuiCss(); const l = document.createElement("link"); l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"; document.head.appendChild(l); this._build(); }
   _build() {
     if (this.container) return;
-    const c = document.createElement("div"); this.container = c; c.id = xor("voidGui");
-    Object.assign(c.style, { position:"fixed", width:this.cfg.width+"px", height:this.cfg.height+"px", background:"rgb(20,20,20)",
-      border:"8px solid rgb(20,20,20)", borderRadius:"8px", zIndex:9999, boxShadow:"0 6px 12px rgba(0,0,0,.4)",
-      display:"flex", flexDirection:"column", boxSizing:"border-box", fontFamily:"Baloo Paaji, sans-serif",
-      fontSize:this.cfg.fontSize+"px", color:"#fff", opacity:this.cfg.opacity, right:"0", top:"0", overflow:"hidden" });
-    const title = document.createElement("div"); title.textContent = this.cfg.title;
-    Object.assign(title.style, { textAlign:"center", padding:"6px", fontWeight:"bold", fontSize:(this.cfg.fontSize+6)+"px", background:"#2a2a2a", cursor:"move" });
-    c.appendChild(title);
-    const body = document.createElement("div"); Object.assign(body.style, { display:"flex", flex:1, overflow:"hidden" }); c.appendChild(body);
-    const side = document.createElement("div"); side.id = xor("sidebar");
-    Object.assign(side.style, { width:"150px", background:"#1a1a1a", display:"flex", flexDirection:"column", gap:"4px", padding:"6px", overflowY:"auto" }); body.appendChild(side);
-    const content = document.createElement("div"); content.id = xor("content"); Object.assign(content.style, { flex:1, padding:"10px", overflowY:"auto" }); body.appendChild(content);
+    const c = document.createElement("div"); this.container = c; c.className = "void-gui"; c.id = xor("voidGui");
+    if (this.cfg.align === "left") { c.style.left = "0"; c.style.right = "auto"; }
+    const head = document.createElement("div"); head.className = "vg-header";
+    const t = document.createElement("span"); t.className = "vg-title"; t.textContent = this.cfg.title;
+    const x = document.createElement("span"); x.className = "vg-x"; x.textContent = "✕"; x.onclick = () => c.classList.toggle("hidden");
+    head.appendChild(t); head.appendChild(x); c.appendChild(head);
+    const body = document.createElement("div"); body.className = "vg-body"; c.appendChild(body);
+    const side = document.createElement("div"); side.className = "vg-side"; body.appendChild(side);
+    const content = document.createElement("div"); content.className = "vg-content"; content.id = xor("content"); body.appendChild(content);
     this.content = content;
-    Object.keys(this.cfg.folders).forEach(name => {
-      const b = document.createElement("button"); b.textContent = name;
-      Object.assign(b.style, { background:"#333", color:"#fff", border:"none", padding:"6px", borderRadius:"4px", cursor:"pointer", fontSize:this.cfg.fontSize+"px" });
-      b.addEventListener("click", () => { [...side.children].forEach(x => x.style.background = "#333"); b.style.background = "#555"; this._folder(name); b.blur(); });
-      side.appendChild(b);
-    });
-    const first = Object.keys(this.cfg.folders)[0]; if (first) this._folder(first);
-    if (this.cfg.draggable) this._drag(c, title);
+    Object.keys(this.cfg.folders).forEach(name => { const b = document.createElement("button"); b.textContent = name; b.onclick = () => { if (this.activeBtn) this.activeBtn.classList.remove("active"); b.classList.add("active"); this.activeBtn = b; this._folder(name); }; side.appendChild(b); });
+    if (this.cfg.draggable) this._drag(c, head);
     document.body.appendChild(c); window.__VOID_GUI = c;
+    const first = side.firstChild; if (first) first.click();
   }
-  _drag(el, handle) { let sx, sy, ox, oy, on = false; handle.addEventListener("mousedown", e => { on = true; sx = e.clientX; sy = e.clientY; const r = el.getBoundingClientRect(); ox = r.left; oy = r.top; el.style.right = "auto"; el.style.left = ox + "px"; el.style.top = oy + "px"; }); document.addEventListener("mousemove", e => { if (!on) return; el.style.left = (ox + e.clientX - sx) + "px"; el.style.top = (oy + e.clientY - sy) + "px"; }); document.addEventListener("mouseup", () => on = false); }
-  _folder(name) { const items = this.cfg.folders[name] || []; this.content.innerHTML = ""; const render = (list) => { for (const it of list) { if (it.type === "subfolder") { const h = document.createElement("div"); h.textContent = "▸ " + it.label; Object.assign(h.style, { fontWeight:"bold", margin:"8px 0 4px", color:"#9fd" }); this.content.appendChild(h); const w = document.createElement("div"); w.style.paddingLeft = "14px"; this.content.appendChild(w); const prev = this.content; this.content = w; render(it.subfolder); this.content = prev; } else this._item(it); } }; render(items); }
+  _drag(el, handle) { let sx, sy, ox, oy, on = false; handle.addEventListener("mousedown", e => { on = true; sx = e.clientX; sy = e.clientY; const r = el.getBoundingClientRect(); ox = r.left; oy = r.top; el.style.left = ox + "px"; el.style.top = oy + "px"; el.style.right = "auto"; }); document.addEventListener("mousemove", e => { if (!on) return; el.style.left = (ox + e.clientX - sx) + "px"; el.style.top = (oy + e.clientY - sy) + "px"; }); document.addEventListener("mouseup", () => on = false); }
+  _folder(name) { const items = this.cfg.folders[name] || []; this.content.innerHTML = ""; const render = list => { for (const it of list) { if (it.type === "subfolder") { const h = document.createElement("div"); h.className = "vg-sec"; h.textContent = it.label; this.content.appendChild(h); const w = document.createElement("div"); this.content.appendChild(w); const p = this.content; this.content = w; render(it.subfolder); this.content = p; } else this._item(it); } }; render(items); }
   _item(item) {
-    const row = document.createElement("div"); Object.assign(row.style, { display:"flex", alignItems:"center", gap:"8px", margin:"3px 0" });
-    const obj = item.obj, prop = item.prop; const setv = () => { if (item.after) try { item.after(); } catch (e) {} save(); };
-    if (item.type === "checkbox") { const l = document.createElement("label"); l.textContent = item.label; l.style.flex = "1"; const b = document.createElement("input"); b.type = "checkbox"; b.checked = !!obj[prop]; b.onchange = () => { obj[prop] = b.checked ? 1 : 0; setv(); }; row.appendChild(l); row.appendChild(b); }
-    else if (item.type === "range") { const l = document.createElement("label"); l.textContent = item.label; l.style.flex = "1"; const v = document.createElement("span"); v.textContent = obj[prop]; const b = document.createElement("input"); b.type = "range"; b.min = item.min; b.max = item.max; b.step = item.step; b.value = obj[prop]; b.style.flex = "1"; b.oninput = () => { obj[prop] = parseFloat(b.value); v.textContent = b.value; if (item.after) try { item.after(); } catch (e) {} }; b.onchange = setv; row.appendChild(l); row.appendChild(b); row.appendChild(v); }
-    else if (item.type === "select") { const l = document.createElement("label"); l.textContent = item.label; l.style.flex = "1"; const s = document.createElement("select"); Object.assign(s.style, { background:"#333", color:"#fff", border:"0", padding:"2px", borderRadius:"4px" }); for (const o of item.options) { const op = document.createElement("option"); op.value = o; op.textContent = o; if (obj[prop] === o) op.selected = true; s.appendChild(op); } s.onchange = () => { obj[prop] = s.value; setv(); }; row.appendChild(l); row.appendChild(s); }
-    else if (item.type === "bind") { const l = document.createElement("label"); l.textContent = item.label; l.style.flex = "1"; const b = document.createElement("button"); b.textContent = item.obj.bind || "NONE"; Object.assign(b.style, { background:"#444", color:"#fff", border:"0", borderRadius:"4px", padding:"2px 12px", cursor:"pointer" }); b.onclick = () => { b.textContent = "..."; const h = e => { item.obj.bind = e.code; b.textContent = e.code; document.removeEventListener("keydown", h); save(); b.blur(); }; document.addEventListener("keydown", h); }; row.appendChild(l); row.appendChild(b); }
-    else if (item.type === "button") { const l = document.createElement("label"); l.textContent = item.label; l.style.flex = "1"; const b = document.createElement("button"); b.textContent = "Run"; Object.assign(b.style, { background:"#444", color:"#fff", border:"0", borderRadius:"4px", padding:"2px 14px", cursor:"pointer" }); b.onclick = () => { item.action && item.action(); b.blur(); }; row.appendChild(l); row.appendChild(b); }
+    const row = document.createElement("div"); row.className = "vg-row"; const obj = item.obj, prop = item.prop;
+    const setv = () => { if (item.after) try { item.after(); } catch (e) {} save(); };
+    const label = () => { const l = document.createElement("label"); l.className = "vg-label"; l.textContent = item.label; return l; };
+    if (item.type === "checkbox") { const b = document.createElement("input"); b.type = "checkbox"; b.className = "vg-switch"; b.checked = !!obj[prop]; b.onchange = () => { obj[prop] = b.checked ? 1 : 0; setv(); }; row.appendChild(label()); row.appendChild(b); }
+    else if (item.type === "range") { const v = document.createElement("span"); v.className = "vg-val"; v.textContent = obj[prop]; const b = document.createElement("input"); b.type = "range"; b.className = "vg-range"; b.min = item.min; b.max = item.max; b.step = item.step; b.value = obj[prop]; b.oninput = () => { obj[prop] = parseFloat(b.value); v.textContent = b.value; if (item.after) try { item.after(); } catch (e) {} }; b.onchange = setv; row.appendChild(label()); row.appendChild(b); row.appendChild(v); }
+    else if (item.type === "select") { const s = document.createElement("select"); s.className = "vg-select"; for (const o of item.options) { const op = document.createElement("option"); op.value = o; op.textContent = o; if (obj[prop] === o) op.selected = true; s.appendChild(op); } s.onchange = () => { obj[prop] = s.value; setv(); }; row.appendChild(label()); row.appendChild(s); }
+    else if (item.type === "bind") { const b = document.createElement("button"); b.className = "vg-btn"; b.textContent = item.obj.bind || "NONE"; b.onclick = () => { b.textContent = "..."; const h = e => { item.obj.bind = e.code; b.textContent = e.code; document.removeEventListener("keydown", h); save(); b.blur(); }; document.addEventListener("keydown", h); }; row.appendChild(label()); row.appendChild(b); }
+    else if (item.type === "button") { const b = document.createElement("button"); b.className = "vg-btn"; b.textContent = "Run"; b.onclick = () => { item.action && item.action(); b.blur(); }; row.appendChild(label()); row.appendChild(b); }
     this.content.appendChild(row);
   }
 }
@@ -557,7 +553,7 @@ function drawOverlay() {
   }
   const tr = [["Krakens",E.KRAKEN,"#000"],["Sandworms",E.SAND_WORM,"#000"],["BabyDragons",E.BABY_DRAGON,"#949494"],["BabyLavaDragons",E.BABY_LAVA,"#f60"],["Bears",E.BEAR,"#8b5a2b"],["Mammoths",E.MAMMOTH,"#a0522d"],["BabyMammoths",E.BABY_MAMMOTH,"#c68642"],["Vultures",E.VULTURE,"#333"],["Crabs",E.CRAB,"#d2691e"],["KingCrabs",E.CRAB_BOSS,"#b22222"],["Piranhas",E.PIRANHA,"#006400"],["Dragons",E.DRAGON,"#7b68ee"],["LavaDragons",E.LAVA_DRAGON,"#ff4500"],["Parrots",E.PARROT,"#00ff7f"],["Ocelots",E.OCELOT,"#ffd700"],["Crocodiles",E.CROCODILE,"#228b22"],["GoldenChickens",E.GOLDEN_CHICKEN,"#ffd700"],["GoldenHens",E.GOLDEN_HEN,"#daa520"],["Boars",E.BOAR,"#8b4513"],["Rabbits",E.RABBIT,"#deb887"],["Spiders",E.SPIDER,"#483d8b"],["Wolfs",E.WOLF,"#696969"],["Foxes",E.FOX,"#d2691e"],["Hawks",E.HAWK,"#8b0000"],["Penguins",E.PENGUIN,"#000080"]];
   for (const [name, type, col] of tr) { if (!S.Tracers[name]) continue; for (const u of ((WD.units && WD.units[type]) || [])) { ctx.save(); ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(cam.x + p.x, cam.y + p.y); ctx.lineTo(cam.x + u.x, cam.y + u.y); ctx.stroke(); ctx.restore(); } }
-  ctx.save(); ctx.font = "16px Baloo Paaji"; let y = 30;
+  ctx.save(); ctx.font = "16px Inter, sans-serif"; let y = 30;
   if (S.fpsDisplay) { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#fff"; ctx.strokeText(fpsText, 12, y); ctx.fillText(fpsText, 12, y); y += 20; }
   if (S.pingDisplay && pingText) { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#0ff"; ctx.strokeText(pingText + " ms", 12, y); ctx.fillText(pingText + " ms", 12, y); y += 20; }
   if (S.listEnabledHacks.mode !== "Off") { let ly = S.listEnabledHacks.mode === "Bottom Left" ? ctx.canvas.height - 20 : 60; for (const k in S) { const f = S[k]; if (f && f.active && f.bind && f.bind !== "NONE") { ctx.strokeStyle = "#000"; ctx.lineWidth = 4; ctx.fillStyle = "#0f0"; ctx.strokeText(k, 12, ly); ctx.fillText(k, 12, ly); ly += S.listEnabledHacks.mode === "Bottom Left" ? -20 : 20; } } }
@@ -594,11 +590,11 @@ function loopAutoHat() { if (!S.AutoHat.active) return; const p = me(); if (!p |
 function loopSmartCraft() { if (!S.SmartCraft.active) return; const id = SmartCraftId(S.SmartCraft.option); if (id < 0 || !inv(id)) return; for (let i = 0; i < S.SmartCraft.amount; i++) CL.WQI(id); }
 function SmartCraftId(o) { const m = { "Reidite Spikes":ITEM.REIDITE_SPIKE,"Amethyst Spikes":ITEM.AMETHYST_SPIKE,"Diamond Spikes":ITEM.DIAMOND_SPIKE,"Gold Spikes":ITEM.GOLD_SPIKE,"Stone Spikes":ITEM.STONE_SPIKE,"Wood Spikes":ITEM.SPIKE }; return m[o] !== undefined ? m[o] : -1; }
 const loops = [loopAimbot, loopAutoSpike, loopAutoWall, loopAutoFire, loopAutoBuild, loopAutoSteal, loopAutoExt, loopAutoBread, loopAutoTotem, loopAutoCrown, loopAutoEmerald, loopAutoFarm, loopAutoTame, loopAutoUnlock, loopAutoFurnace, loopAutoSeed, loopAutoIce, loopAutoBook, loopZmaCrown, loopZmaBottle, loopZmaRedGold, loopPathfinder, loopAutoLand, loopAutoDiving, loopAutoHat, loopSmartCraft];
+function runLoops() { for (const l of loops) { try { l(); } catch (e) {} } }
 function mainLoop(t) { const dt = Math.min((t - lastFrameT) / 1000, 1); lastFrameT = t; if (Date.now() - lastFpsT > 1000) { lastFpsT = Date.now(); fpsText = Math.round(1 / (dt || 1)) + " FPS"; } if (wsReady) { try { drawOverlay(); } catch (e) {} } requestAnimationFrame(mainLoop); }
 
 /* ============================== 10. start ============================== */
 function patchSource(src) { return src.replace(/(<\s*|>\s*)(?:0[xX][fF]{4}|65535)(\s*>|\s*)|(\s*)(?:0[xX][fF]{4}|65535)(\s*)(?=>|<)/g, m => m.replace(/(?:0[xX][fF]{4}|65535)/, "0")); }
-
 function startInstall() {
   log("startInstall — czekam na obiekty gry...");
   let tries = 0;
@@ -612,7 +608,7 @@ function startInstall() {
       log("instaluje (captured=" + captured.length + ", brak=" + (missing.join(",") || "brak") + ")");
       try { mapAll(); } catch (e) { log("BLAD mapAll: " + ((e && e.stack) || e)); }
       try { hookWebSocket(); hookSpawn(); hookGauges(); hookTime(); hookPing(); hookCanvas(); hookDrawGame(); hookKeys(); } catch (e) { log("BLAD hookow: " + ((e && e.stack) || e)); }
-      try { for (const l of loops) setInterval(l, 60); requestAnimationFrame(mainLoop); } catch (e) { log("BLAD petli: " + e); }
+      try { setInterval(runLoops, 60); requestAnimationFrame(mainLoop); } catch (e) { log("BLAD petli: " + e); }
       try { gui = new Gui(guiConfig); gui.build(); } catch (e) { log("BLAD GUI: " + ((e && e.stack) || e)); }
       try { setInterval(() => { if (wsReady) { try { CL.WSG && CL.WSG(); } catch (e) {} } }, 2000); applyBrightness(); applyMenuOpacity(); } catch (e) {}
       window.__VOID = { S, CL, GD, WD, UD, MS };
@@ -623,16 +619,13 @@ function startInstall() {
     }
   }, 200);
 }
-
 try {
   const gs = localStorage.getItem("guiSettings");
-  if (gs) { const a = JSON.parse(gs); ["align","toggleGuiKey","toggleGuiButton","draggable","fontSize","opacity","width","height"].forEach((k, i) => { if (a[i] !== undefined) guiConfig[k] = a[i]; }); }
+  if (gs) { const a = JSON.parse(gs); ["align","draggable","fontSize","opacity","width","height"].forEach((k, i) => { if (a[i] !== undefined) guiConfig[k] = a[i]; }); }
   const st = localStorage.getItem("settings_all");
   if (st) { const o = JSON.parse(st); for (const p in o) setPath(p, o[p]); }
 } catch (e) {}
-
-hookTimeout();
-reloadTextures();
+hookTimeout(); reloadTextures();
 log("uruchamiam gre (" + Math.round(GAME_SRC.length / 1024) + " KB)...");
 try { Function(patchSource(GAME_SRC))(); } catch (e) { log("BLAD uruchomienia gry: " + ((e && e.stack) || e)); }
 setInterval(() => { const p = $("exapush-popup"); if (p) { p.style.opacity = 0; p.remove(); } }, 2500);
